@@ -499,6 +499,29 @@ deserves a dedicated command ("extract cavity from assembly") once meshing lands
 Tier 2; it is the step most likely to be tedious by hand and it is where an
 assembly-aware workbench earns its keep over exporting STEP to a standalone tool.
 
+**Measured on a real assembly.** Run against a two-way over-ear cup (`examples/inspect_assembly.py`,
+118 solids across eight externally linked documents — a 70 mm woofer, a tweeter, cup,
+plate, retainers and a PCB):
+
+| Step | Result |
+|---|---|
+| Link resolution | all 8 external documents auto-load; every link exposes a placed `Shape` |
+| Volume from the `Assembly::AssemblyObject` root | 125 cm³ of **material**, 118 solids |
+| Fuse all solids | 7.1 s |
+| Subtract from a padded bounding box | 8.9 s → 7 void regions |
+| Largest void | 609 cm³ spanning the whole envelope — interior and exterior air **connected** |
+| Other voids | 4 sealed pockets under 0.01 cm³ (screw holes), acoustically negligible |
+
+Two conclusions. Boolean extraction is **fast enough to be an interactive command** — 16 s
+on a full assembly is fine for something run once per geometry change. And the open cup
+confirms the capping requirement is the normal case, not an edge case: the ear-side
+opening leaves no closed cavity, so the acoustic domain is only defined once the ear
+simulator face (or a baffle, for a loudspeaker) closes it. The extraction command must
+therefore *ask* for the capping face rather than trying to infer it.
+
+Mesh sizing for that model is undemanding: 2.15 mm elements at 20 kHz, about 49 across the
+105 mm cup. The cost driver will be the thin-gap resolution of Tier 3, not the cavity.
+
 A related consequence for Tier 3: the thin gaps that dominate earphone behaviour — the
 slot around a diaphragm, a 0.1 mm vent — are exactly the features most likely to be
 absent or idealised in a mechanical CAD model, since they are manufacturing clearances

@@ -50,6 +50,18 @@ Tier 0 proves the plumbing end to end:
 - Objects **round-trip through saved documents**, and files written by older versions
   gain properties added since
 
+Geometry is read from any container — `Part` primitives, PartDesign bodies, links,
+`App::Part` groups and full **assemblies** with externally linked documents. To see what
+an existing model offers before setting anything up:
+
+```bash
+PYTHONPATH=/usr/lib64/freecad/lib64 python3 examples/inspect_assembly.py my_design.FCStd --cavity
+```
+
+That lists the parts and volumes, the element size the audio band demands, and whether a
+fluid domain can be extracted by subtraction — or whether the model is open and needs its
+opening capped first, which for a headphone cup it invariably is.
+
 ## Installation
 
 Requires FreeCAD 1.0 or newer.
