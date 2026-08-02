@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<package format="1" xmlns="https://wiki.freecad.org/Package_Metadata">
+  <name>Audio Analysis</name>
+  <description>
+    Acoustic simulation for headphones, earphones and loudspeakers. Drives existing
+    open-source solvers (Elmer FEM, NumCalc BEM, ngspice) from FreeCAD geometry, and
+    reports sound pressure level, impedance and directivity.
+  </description>
+  <version>0.1.0</version>
+  <date>2026-08-02</date>
+
+  <maintainer email="devrin@fastmail.com">Devrin Talen</maintainer>
+  <license file="LICENSE">LGPL-2.1-or-later</license>
+
+  <url type="repository" branch="master">https://github.com/devrintalen/freecad-audio-analysis</url>
+  <url type="readme">https://github.com/devrintalen/freecad-audio-analysis/blob/master/README.md</url>
+  <url type="bugtracker">https://github.com/devrintalen/freecad-audio-analysis/issues</url>
+
+  <content>
+    <workbench>
+      <classname>AudioAnalysisWorkbench</classname>
+      <name>Audio Analysis</name>
+      <icon>freecad/audio_analysis/resources/icons/AudioAnalysis.svg</icon>
+      <description>
+        Electroacoustic simulation: lumped-element modelling, interior and thermoviscous
+        acoustics, exterior radiation and directivity.
+      </description>
+      <freecadmin>1.0</freecadmin>
+      <!-- Tier 1 needs only numpy, scipy and matplotlib, which FreeCAD already has.
+           pyfar handles frequency-response objects and fractional-octave smoothing.
+           Solver binaries (Elmer, Gmsh, NumCalc) are found at runtime, not declared
+           here, so the workbench installs and runs without them. See docs/SETUP.md. -->
+      <pythonmin>3.10</pythonmin>
+      <depend type="python" optional="false">pyfar</depend>
+      <depend type="python" optional="true">sofar</depend>
+      <depend type="python" optional="true">acoupy_ears</depend>
+    </workbench>
+  </content>
+</package>
