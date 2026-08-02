@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# FreeCAD
+*.FCStd1
+*.FCBak
+
+# Solver case directories and results (regenerable; often large)
+cases/
+*.vtu
+*.vtk
+*.pvtu
+*.unv
+*.msh
+*.frd
+
+# Editors / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
