@@ -260,6 +260,123 @@ def check_analysis_is_not_empty(analysis: Any) -> Iterator[Diagnostic]:
         )
 
 
+@check
+def check_network_topology(analysis: Any) -> Iterator[Diagnostic]:
+    """Tier 1: the network must be buildable and every node must have a path to ground."""
+    from freecad.audio_analysis.objects.network_objects import Driver
+
+    drivers = _find(analysis, Driver.Type)
+    if not drivers and not _members(analysis):
+        return  # Empty analysis; check_analysis_is_not_empty already said so.
+    if not drivers:
+        return  # Nothing to build yet; not an error until a solve is attempted.
+
+    from freecad.audio_analysis.builder import BuildError, build_network
+
+    try:
+        network, _ = build_network(analysis)
+    except BuildError as exc:
+        yield Diagnostic(
+            severity=Severity.ERROR,
+            code="network-unbuildable",
+            message=str(exc),
+            why="The network could not be assembled, so nothing can be solved.",
+            remedy="Correct the object named in the message.",
+            reference="STRUCTURE.md §6.6",
+        )
+        return
+
+    for node in network.floating_nodes():
+        from freecad.audio_analysis.builder import label_for_node
+
+        yield Diagnostic(
+            severity=Severity.ERROR,
+            code="floating-node",
+            message=f"Node '{label_for_node(analysis, node)}' has only one connection.",
+            why=(
+                "A node with a single connection has no path back to ambient, so no "
+                "volume velocity can flow and the system has no solution. It usually "
+                "means a port or mesh was left dangling."
+            ),
+            remedy="Connect a second element to it, or delete the element that leads to it.",
+            reference="STRUCTURE.md §6.6",
+        )
+
+
+@check
+def check_driver_connections(analysis: Any) -> Iterator[Diagnostic]:
+    """An unset node means the exterior, which is meaningful but easy to mean by accident."""
+    from freecad.audio_analysis.objects.network_objects import Driver
+
+    for driver in _find(analysis, Driver.Type):
+        if driver.FrontNode is None and driver.BackNode is None:
+            yield Diagnostic(
+                severity=Severity.WARNING,
+                code="driver-unloaded",
+                message="Both sides of this driver connect to the exterior.",
+                why=(
+                    "Front and back radiation then cancel almost completely at low "
+                    "frequency, as they do for a bare driver with no baffle. That is a "
+                    "real configuration, but rarely the one intended."
+                ),
+                remedy=(
+                    "Connect the front to the ear or listening cavity, and the back to "
+                    "the enclosure volume."
+                ),
+                subject=driver.Label,
+                reference="STRUCTURE.md §6.6",
+            )
+        elif driver.BackNode is None:
+            yield Diagnostic(
+                severity=Severity.INFO,
+                code="driver-open-back",
+                message="This driver's back radiates directly to the exterior.",
+                why=(
+                    "Modelled as a fully open back with no rear cavity at all -- no "
+                    "back-volume stiffness and no vent impedance."
+                ),
+                remedy=(
+                    "Intended for a fully open design. For a vented cup, connect the back "
+                    "to a volume and add a Port for the opening."
+                ),
+                subject=driver.Label,
+            )
+
+
+@check
+def check_sweep_against_validity(analysis: Any) -> Iterator[Diagnostic]:
+    """Warn when a sweep runs past the frequency where lumped modelling holds."""
+    from freecad.audio_analysis.objects.study import FrequencySweep, LumpedSolver
+
+    sweeps = _find(analysis, FrequencySweep.Type)
+    solvers = _find(analysis, LumpedSolver.Type)
+    if not sweeps or not solvers:
+        return
+
+    from freecad.audio_analysis.builder import medium_of
+
+    medium = medium_of(analysis)
+    dimension = solvers[0].LargestDimension.getValueAs("m").Value
+    if dimension <= 0.0:
+        yield Diagnostic(
+            severity=Severity.INFO,
+            code="validity-unknown",
+            message="Lumped validity is not being checked.",
+            why=(
+                "Without the model's largest internal dimension there is no way to know "
+                "where the lumped assumption stops holding, so results carry no limit."
+            ),
+            remedy="Set LargestDimension on the solver -- for an over-ear cup, its diameter.",
+            reference="STRUCTURE.md §2.4",
+            subject=solvers[0].Label,
+        )
+        return
+
+    yield report_lumped_validity(
+        dimension, sweeps[0].Stop.getValueAs("Hz").Value, medium
+    )
+
+
 def report_lumped_validity(
     largest_dimension_m: float,
     max_frequency: float,

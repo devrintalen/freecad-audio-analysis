@@ -28,16 +28,23 @@ class AudioAnalysisWorkbench(FreeCADGui.Workbench):
         if not ok:
             FreeCAD.Console.PrintWarning(f"Audio Analysis: {message}\n")
 
-        from freecad.audio_analysis.commands import analysis_commands, measure_volume
+        from freecad.audio_analysis.commands import (
+            analysis_commands,
+            measure_volume,
+            network_commands,
+        )
         from freecad.audio_analysis.solvers import discovery
 
         analysis = analysis_commands.register_all()
         tools = measure_volume.register_all()
+        model, solve = network_commands.register_all()
 
         self.appendToolbar("Audio Analysis", analysis)
+        self.appendToolbar("Audio Network", model)
+        self.appendToolbar("Audio Solve", solve)
         self.appendToolbar("Audio Tools", tools)
-        self.appendMenu("&Audio Analysis", analysis)
-        self.appendMenu("&Audio Analysis", tools)
+        for group in (analysis, model, solve, tools):
+            self.appendMenu("&Audio Analysis", group)
 
         discovery.report()
         FreeCAD.Console.PrintLog(f"Audio Analysis {__version__} loaded.\n")
