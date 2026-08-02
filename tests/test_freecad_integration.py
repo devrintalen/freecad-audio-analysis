@@ -314,6 +314,68 @@ class TestContainerGeometry:
         assert measure_volume(part).volume_mm3 == pytest.approx(1000.0)
 
 
+class TestPreflightChecks:
+    """The checks must fire on real documents, not just stubs."""
+
+    def test_analysis_without_environment_is_an_error(self, doc):
+        from freecad.audio_analysis.checks import run_checks
+
+        analysis = make_analysis(doc)
+        report = run_checks(analysis)
+        assert not report.can_solve
+        assert any(d.code == "no-environment" for d in report.errors)
+
+    def test_analysis_with_environment_can_proceed(self, doc):
+        from freecad.audio_analysis.checks import run_checks
+
+        analysis = make_analysis(doc)
+        make_environment(doc, analysis)
+        report = run_checks(analysis)
+        assert report.can_solve
+        # But it should still note there is nothing to simulate.
+        assert any(d.code == "analysis-empty" for d in report.diagnostics)
+
+    def test_two_environments_is_an_error(self, doc):
+        from freecad.audio_analysis.checks import run_checks
+
+        analysis = make_analysis(doc)
+        make_environment(doc, analysis)
+        make_environment(doc, analysis, name="Environment2")
+        report = run_checks(analysis)
+        assert any(d.code == "multiple-environments" for d in report.errors)
+
+    def test_celsius_typed_into_a_kelvin_field_is_caught(self, doc):
+        """20 K instead of 293.15 K is the classic slip."""
+        from freecad.audio_analysis.checks import run_checks
+
+        analysis = make_analysis(doc)
+        env = make_environment(doc, analysis)
+        env.Temperature = FreeCAD.Units.Quantity("20 K")
+        doc.recompute()
+
+        report = run_checks(analysis)
+        warning = next(d for d in report.warnings if d.code == "implausible-temperature")
+        assert "Celsius" in warning.why
+
+    def test_implausible_pressure_is_caught(self, doc):
+        from freecad.audio_analysis.checks import run_checks
+
+        analysis = make_analysis(doc)
+        env = make_environment(doc, analysis)
+        env.StaticPressure = FreeCAD.Units.Quantity("5 Pa")
+        doc.recompute()
+
+        report = run_checks(analysis)
+        assert any(d.code == "implausible-pressure" for d in report.warnings)
+
+    def test_normal_setup_produces_no_warnings(self, doc):
+        from freecad.audio_analysis.checks import run_checks
+
+        analysis = make_analysis(doc)
+        make_environment(doc, analysis)
+        assert run_checks(analysis).warnings == []
+
+
 class TestSolverDiscovery:
     def test_reports_known_solvers(self):
         from freecad.audio_analysis.solvers import discovery

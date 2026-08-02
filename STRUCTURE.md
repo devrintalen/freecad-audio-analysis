@@ -255,7 +255,7 @@ Which engine handles which question:
 A key workflow consequence: **the lumped model and the 3D model must share parameters.**
 A `Driver` object holds Thiele–Small parameters; the lumped solver consumes them directly,
 and the 3D solver uses them to drive the diaphragm boundary. Better still, the 3D solver
-can *extract* them (§6.7), closing the loop.
+can *extract* them (§6.8), closing the loop.
 
 ---
 
@@ -696,7 +696,84 @@ Curves are drawn beyond it only when marked — greyed, dashed, or cut off — b
 confident-looking response plotted to 20 kHz from a model valid to 400 Hz is the single
 easiest way for this tool to mislead its user.
 
-### 6.7 Round-tripping between lumped and 3D
+### 6.7 Guiding the user to a correct setup
+
+Acoustic simulation fails quietly. A driver whose back port connects to nothing, or a
+sweep run an octave past lumped validity, does not crash — it returns a smooth, confident,
+wrong curve, and someone new to the field has no way to tell it from a right one. A tool
+aimed at people who are strong in CAD but new to audio engineering must therefore be
+**opinionated and explanatory**, not a blank canvas. Five mechanisms, in the order the
+user meets them.
+
+**1. Templates, not a blank canvas.** Creating an analysis asks what is being designed —
+in-ear, on-ear, over-ear closed, **over-ear open-back**, sealed box, vented box, free
+field. Each instantiates a correct network topology with named nodes and placeholder
+elements. The user supplies *values*; they never have to invent *topology*. Getting the
+graph wrong is the most consequential and least visible mistake available, so the
+workbench should not offer the chance to make it.
+
+**2. Objects that explain themselves.** Every task panel opens with a short statement of
+what the object represents physically and which results it moves. Defaults are sensible
+and carry provenance — where a number came from, and how much to trust it.
+
+**3. Preflight checks before every solve.** Implemented in `checks.py`. Each finding
+answers three questions, not one: what is wrong, **why it matters physically**, and what
+to do. Severity governs consequence — `ERROR` blocks the solve, `WARNING` runs but
+annotates the results, `INFO` records an assumption. The catalogue grows per tier:
+
+| Tier | Checks |
+|---|---|
+| 0 | medium present and singular; temperature/pressure plausible (catches Celsius-into-kelvin and the kPa trap); analysis non-empty |
+| 1 | every driver has both acoustic ports connected; no floating nodes; sweep versus lumped validity; excursion beyond Xmax; crossover loads a real impedance |
+| 2 | fluid domain closed; unclassified openings listed for the user to call leak or artefact; mesh resolves the top frequency |
+| 3 | boundary layers resolved in narrow gaps; gaps thinner than δ_v flagged; screen impedances present where geometry implies damping |
+| 4 | far-field distance genuinely far field; BEM mesh adequate at the top frequency |
+
+**4. Results that state their own limits.** Every lumped curve carries its validity limit
+(§2.4), drawn greyed or cut off beyond it. A plot that runs confidently to 20 kHz from a
+model valid to 400 Hz is the easiest way for this tool to mislead.
+
+**5. Comparison as the teaching tool.** The fastest way to learn what a design choice does
+is to change it and watch. `ParameterSweep` runs a study across a value and overlays the
+results, so the question "what do my back vents actually do" is answered by a curve family
+rather than by reading a textbook.
+
+#### Worked example: what does an open back do?
+
+This is a real question from the driver_cup design, whose rear openings were chosen
+without analysis. It is worth walking through because it shows the guidance working, and
+because — usefully — it is answerable at **Tier 1**.
+
+*The physics.* A sealed back volume is a spring. A small one is a stiff spring: it raises
+the system resonance above the driver's own free-air resonance and restricts excursion.
+Opening the back removes most of that stiffness, so the resonance falls back toward the
+driver's natural one. The openings also **damp** the driver: air forced through a
+restricted, resistive path dissipates energy, which controls the height of the resonant
+peak. That is what damping mesh over rear vents is for. Secondary effects: an open back
+suppresses the internal standing waves that colour a sealed cup's midrange, and it
+destroys isolation in both directions.
+
+*The three parameters that matter*, all expressible in the Tier 1 network as elements
+between the rear cavity node and the exterior:
+
+| Parameter | Element | Effect |
+|---|---|---|
+| Total vent area | `Port` | how much stiffness is removed; sets the resonance shift |
+| Vent depth | `Port` mass term | adds a mass that can create its own resonance |
+| Mesh / screen resistance | `AcousticResistance` | damps the resonant peak; the main tuning control |
+
+*Why Tier 1 suffices.* All of this lives at the system resonance, typically 50–500 Hz for
+an over-ear headphone — comfortably inside the ~400 Hz lumped validity limit of a 105 mm
+cup (§2.4). So the workbench can answer "how much should I open the back, and how much
+should I damp it" with a sub-second parameter sweep, long before any 3D solve exists.
+
+*What Tier 1 cannot answer.* Anything above a few hundred hertz: how the openings affect
+midrange coloration, how much sound leaks out, how much external noise gets in, and the
+crossover region where the tweeter contributes. Those need Tier 2/3 for the interior and
+Tier 4 BEM for isolation. The check in mechanism 4 makes that boundary explicit on the
+plot rather than leaving the user to infer it.
+
+### 6.8 Round-tripping between lumped and 3D
 
 The feature that makes the two-tier approach worth the effort:
 

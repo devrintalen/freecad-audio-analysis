@@ -86,5 +86,43 @@ class SolverStatus(AudioCommand):
         return True
 
 
+class CheckSetup(AudioCommand):
+    """Run the preflight checks and report what they find."""
+
+    Name = "CheckSetup"
+    MenuText = "Check setup"
+    ToolTip = (
+        "Validate the active analysis before solving. Reports what is wrong, why it "
+        "matters physically, and what to do about it."
+    )
+    IconName = "CheckSetup"
+
+    def run(self) -> None:
+        from freecad.audio_analysis.checks import run_checks
+
+        analysis = find_active_analysis()
+        if analysis is None:
+            FreeCAD.Console.PrintError(
+                "Audio Analysis: no active analysis to check.\n"
+            )
+            return
+
+        report = run_checks(analysis)
+        FreeCAD.Console.PrintMessage(
+            f"Audio Analysis: checked {analysis.Label} -- {report.summary()}\n"
+            f"{report.format()}\n"
+        )
+        if not report.can_solve:
+            FreeCAD.Console.PrintWarning(
+                "Audio Analysis: the errors above must be resolved before solving.\n"
+            )
+
+    def IsActive(self) -> bool:
+        return FreeCAD.ActiveDocument is not None and find_active_analysis() is not None
+
+
 def register_all() -> list[str]:
-    return [register(cmd) for cmd in (NewAnalysis(), AddEnvironment(), SolverStatus())]
+    return [
+        register(cmd)
+        for cmd in (NewAnalysis(), AddEnvironment(), CheckSetup(), SolverStatus())
+    ]
