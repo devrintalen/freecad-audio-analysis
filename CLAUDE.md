@@ -71,6 +71,15 @@ Surveyed 2026-08-02. Re-check rather than trusting this list if something fails.
 | Elmer (`ElmerSolver`, `ElmerGrid`) | **not installed** — needed from Tier 2 |
 | NumCalc | **not installed** — needed from Tier 4 |
 
+`docs/SETUP.md` covers installing the missing pieces (Gentoo-specific). Run
+`python3 scripts/check_env.py` to see current state rather than guessing.
+
+**Python packages must be importable from inside FreeCAD.** FreeCAD 1.1.1 embeds the
+system interpreter (3.13.14), so `pip install --user --break-system-packages <pkg>` lands
+in `~/.local/lib/python3.13/site-packages` and is picked up automatically. A plain venv is
+*not* visible to a GUI-launched FreeCAD without `PYTHONPATH`. Prefer portage where the
+package exists.
+
 ### Running FreeCAD headlessly
 
 Import the bindings into system Python — this is how tests run without a GUI:
