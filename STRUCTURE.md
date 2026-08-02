@@ -255,7 +255,7 @@ Which engine handles which question:
 A key workflow consequence: **the lumped model and the 3D model must share parameters.**
 A `Driver` object holds Thiele–Small parameters; the lumped solver consumes them directly,
 and the 3D solver uses them to drive the diaphragm boundary. Better still, the 3D solver
-can *extract* them (§6.8), closing the loop.
+can *extract* them (§6.9), closing the loop.
 
 ---
 
@@ -773,7 +773,85 @@ crossover region where the tweeter contributes. Those need Tier 2/3 for the inte
 Tier 4 BEM for isolation. The check in mechanism 4 makes that boundary explicit on the
 plot rather than leaving the user to infer it.
 
-### 6.8 Round-tripping between lumped and 3D
+### 6.8 Outputs — what the user actually sees
+
+The outputs *are* the product. Everything else is machinery for producing them.
+
+#### The primary output is a family of curves
+
+Almost every result is a complex quantity over frequency, held in one container
+(`results/curve.py`) so plotting, smoothing, export and comparison are written once.
+Values are stored **complex, always** — magnitude-only would silently destroy multi-driver
+summation (§2.4) and group delay — and each curve carries the frequency above which it
+stops being trustworthy.
+
+| Curve | Read for | From tier |
+|---|---|---|
+| **SPL vs frequency** | the headline answer: how it sounds | 1 |
+| Per-driver contributions overlaid on their sum | crossover work; where each driver hands over | 1 |
+| **Electrical impedance**, magnitude and phase | amplifier matching; resonance identification | 1 |
+| Sensitivity (dB/V or dB/mW) | the number that goes on a spec sheet | 1 |
+| Diaphragm excursion, with an Xmax limit line | how loud it can go before distorting | 1 |
+| Phase and **group delay** | timing; drivers fighting through a crossover | 1 |
+| Response vs seal condition (a curve *family*) | how much bass depends on fit — dominant for real headphones | 1 |
+| Deviation from a target curve | how far from Harman / diffuse-field | 1 |
+| Polar plots and directivity sonograms | off-axis behaviour; loudspeaker dispersion | 4 |
+| Passive isolation vs frequency | how much outside noise gets in | 4 |
+
+#### Fields, once there is a 3D solve
+
+Rendered through FreeCAD's existing VTK post-processing, so cut planes, contours, clipping
+and animation come for free (§6.2).
+
+| Field | Shows | From tier |
+|---|---|---|
+| Pressure magnitude and phase on cut planes | where standing waves sit; which cavity resonance causes which peak | 2 |
+| Cavity mode shapes and their frequencies | the resonances to design away | 2 |
+| Particle velocity | where air actually moves; how ports and vents load | 2 |
+| **Loss density** | *where energy is dissipated* — makes a damping mesh's work visible | 3 |
+| Boundary-layer resolution overlay | whether the mesh resolves the physics it claims to | 3 |
+| Diaphragm structural mode shapes | break-up; which mode causes which response artefact | 4 |
+| Far-field balloon / directivity sphere | radiation pattern in 3D | 4 |
+
+The loss-density map is the one worth waiting for. Thermoviscous modelling exists because
+narrow gaps dissipate energy (§2.2); seeing *which* gap is doing it turns a tuning
+exercise into a design decision.
+
+#### A summary card, not just curves
+
+For someone strong in CAD and new to audio, a wall of curves is data, not guidance. Every
+result carries a short plain-language panel with the numbers that characterise the design:
+
+- system resonance and its Q
+- −3 dB and −10 dB points — bass extension
+- sensitivity, and maximum SPL before excursion exceeds Xmax
+- RMS deviation from the chosen target curve, over a stated band
+- the frequency above which the result is not trustworthy, stated plainly
+
+Scalar metrics are computed from the **trusted** portion of a curve only, so a figure like
+"−3 dB at 45 Hz" is never quoted from a region the model cannot represent.
+
+#### Comparison is the main way anyone learns
+
+A single curve says what a design does. Two curves say what a *decision* does.
+`ParameterSweep` runs a study across a value and overlays the family, with a delta view
+against a chosen reference. This is how "what do my rear vents do" gets answered (§6.7),
+and it is the feature most likely to change how someone designs.
+
+#### Provenance on everything
+
+Every plot and export carries how it was made: solver and version, mesh size, drive level,
+medium conditions, validity limit, date. A result that cannot say where it came from is
+not evidence, and six months later nobody remembers which run produced which curve.
+
+#### Export
+
+CSV and **FRD** for curves (FRD being what loudspeaker tools read, so results can leave for
+a crossover simulator), **SOFA** for directivity and HRTF data, VTU for fields, PNG/SVG for
+plots, and a single-file HTML or PDF report bundling curves, summary card, provenance and
+the preflight diagnostics.
+
+### 6.9 Round-tripping between lumped and 3D
 
 The feature that makes the two-tier approach worth the effort:
 
