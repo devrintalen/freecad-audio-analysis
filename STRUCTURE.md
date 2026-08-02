@@ -114,7 +114,58 @@ model. See §6.4.
 - **Panel resonance.** Cabinet walls flex and radiate. Needs a structural–acoustic coupled
   solve.
 
-### 2.4 The frequencies that matter
+### 2.4 Multiple drivers — why it is not simply "run it twice and add"
+
+Multi-driver designs are the norm, not a special case: a two-way headphone, a woofer with
+a passive radiator, an in-ear with two or three balanced armatures, any loudspeaker with a
+crossover. **Multiple drivers are a first-class requirement**, and three separate effects
+mean they cannot be handled by simulating each driver alone and summing the results.
+
+**They load each other through shared volumes.** If two drivers share a back volume,
+driver A's cone motion pressurises the very volume that acts as driver B's suspension
+stiffness. That is a genuine two-way coupling: B's motion changes A's load and vice
+versa. The two must be solved *simultaneously*, as one system of equations. Superposing
+two independent single-driver solutions gets this wrong, and the error is largest exactly
+where the drivers overlap in frequency — the crossover region you most care about.
+
+**They share an electrical source.** A crossover splits the input between drivers, so each
+sees a different source impedance, and the amplifier sees their parallel combination
+through the filter. Driver impedance is strongly frequency-dependent (it peaks at
+resonance), so the crossover's actual behaviour in circuit is never the textbook filter
+response computed against a fixed resistor.
+
+**They sum as complex pressures, not powers.** At the listening point the contributions add
+with magnitude *and* phase. In the crossover region the two drivers are comparable in
+level, so relative phase decides whether they reinforce or cancel — a driver wired in
+reverse polarity, or offset by a centimetre of path length, changes the summed response by
+tens of dB. This is why crossover design is mostly phase management, and why any tool that
+sums magnitudes only is useless for it.
+
+The architectural consequence is decisive: the lumped engine must be a **general network
+solver over an arbitrary topology**, not a library of closed-form enclosure formulas. Get
+that right and one driver, two drivers or five are the same code path. See §6.6.
+
+#### A caveat that matters for real designs
+
+Lumped modelling is valid only while a cavity is small against the wavelength — the usual
+criterion is one-eighth of a wavelength across its largest dimension. That limit falls
+quickly with size:
+
+| Cavity | Largest dimension | Lumped valid to |
+|---|---|---|
+| Ear canal / IEM front volume | ~10 mm | ~4.3 kHz |
+| Small sealed earphone body | ~25 mm | ~1.7 kHz |
+| Over-ear cup | ~105 mm | **~400 Hz** |
+| Bookshelf loudspeaker cabinet | ~300 mm | ~140 Hz |
+
+So for a two-way over-ear headphone, Tier 1 gives an honest account of the woofer's bass
+and the crossover's *electrical* behaviour, but the tweeter's band and the acoustic
+summation between drivers sit well beyond lumped validity and need Tier 2/3. The
+workbench must **report this limit alongside every lumped result** rather than plotting a
+confident curve to 20 kHz that stops being true above a few hundred hertz.
+``AirProperties.lumped_validity_limit()`` computes it.
+
+### 2.5 The frequencies that matter
 
 Audio band is 20 Hz – 20 kHz. At 20 kHz the wavelength in air is 17 mm, so element size
 must be ~2–3 mm to get 6–10 elements per wavelength. For an over-ear cup that is a large
@@ -138,7 +189,7 @@ problem class.
 | **[Gmsh](https://gmsh.info/)** | GPL | Meshing, incl. boundary-layer refinement | Mature, **already bundled in FreeCAD** |
 | **[NumCalc](https://github.com/Any2HRTF/Mesh2HRTF)** (from Mesh2HRTF) | EUPL v1.2+ | Exterior BEM with Burton–Miller + ML-FMM; the fast path for radiation/directivity/HRTF | Mature, purpose-built for acoustics, actively developed |
 | **[Bempp-cl](https://bempp.com/)** | Permissive (verify per release) | Alternative/second-opinion BEM, scriptable from Python, good for interior–exterior coupling | Active, research-grade |
-| **[ngspice](https://ngspice.sourceforge.io/)** | BSD-style | Lumped equivalent-circuit solving (Thiele–Small, crossovers, transducer networks) | Very mature |
+| **[ngspice](https://ngspice.sourceforge.io/)** | BSD-style | Crossover networks (genuinely R/L/C), netlist import, and independent cross-check of the native solver — *not* the primary lumped engine, see §6.6 | Very mature |
 | **[pyfar](https://pyfar.org/) / sofar** | MIT | Frequency-response objects, smoothing, plotting, SOFA I/O for directivity data | Active |
 | **[acoupy_ears](https://gitlab.com/acoupy/acoupy_ears)** | MIT | Generates ITU-T P.57 anatomical ear canal / concha / pinna geometry as Gmsh models or STL (§6.4) | Small but sufficient |
 | **NumPy / SciPy** | BSD | Native lumped-network assembly, analytic models, post-processing | — |
@@ -186,10 +237,10 @@ Which engine handles which question:
 
 | Design question | Engine | Typical runtime |
 |---|---|---|
-| Sealed/ported box bass alignment | Lumped (ngspice or native) | < 1 s |
-| Earphone response with mesh + leak, ≤ ~2 kHz | Lumped network | < 1 s |
-| Impedance curve of a driver | Lumped | < 1 s |
-| Crossover network response | Lumped | < 1 s |
+| Sealed/ported box bass alignment | Lumped network (native) | < 1 s |
+| Earphone response with mesh + leak, ≤ ~2 kHz | Lumped network (native) | < 1 s |
+| Impedance curve of a driver, or of a multi-driver system through its crossover | Lumped network (native) | < 1 s |
+| Crossover network response | Lumped network (native), or ngspice | < 1 s |
 | Standing waves in an earcup / horn interior | Elmer Helmholtz | minutes |
 | Earphone front volume + nozzle + coupler, full band | Elmer thermoviscous | tens of minutes |
 | Damping-slot / vent resistance from geometry | Elmer thermoviscous (small local model) | minutes |
@@ -204,7 +255,7 @@ Which engine handles which question:
 A key workflow consequence: **the lumped model and the 3D model must share parameters.**
 A `Driver` object holds Thiele–Small parameters; the lumped solver consumes them directly,
 and the 3D solver uses them to drive the diaphragm boundary. Better still, the 3D solver
-can *extract* them (§6.6), closing the loop.
+can *extract* them (§6.7), closing the loop.
 
 ---
 
@@ -218,11 +269,21 @@ save/restore; solver discovery and a preferences page; a "hello world" analysis 
 a solid and reports its volume. **Goal: the plumbing is proven before any physics.**
 
 ### Tier 1 — Lumped element modelling
-No 3D solve at all. Driver (Thiele–Small), enclosure volumes, ports, passive radiators,
-acoustic resistances, leaks, crossover components. Assemble the equivalent circuit,
-solve per frequency, plot SPL / impedance / cone excursion / group delay. Volumes can be
-**measured from FreeCAD solids**, which is already more than most FOSS tools offer.
-Validate against closed-form sealed and vented box theory.
+No 3D solve at all. A **general nodal network solver** (§6.6) over drivers (Thiele–Small),
+enclosure volumes, ports, passive radiators, acoustic resistances, leaks and crossover
+components. Assemble the admittance matrix, solve per frequency, plot SPL / impedance /
+cone excursion / group delay.
+
+**Multiple drivers from the outset** — the network formulation makes one driver and five
+the same code path, and retrofitting it later would mean rewriting the solver (§2.4).
+Includes crossover networks, per-driver polarity, shared back volumes, and complex
+summation at the observation node.
+
+Volumes can be **measured from FreeCAD solids**, which is already more than most FOSS
+tools offer. Every result reports its lumped validity limit.
+
+Validate against closed-form sealed and vented box theory, and against a two-driver case
+with a shared volume where independent superposition provably gives the wrong answer.
 
 ### Tier 2 — Lossless interior acoustics (Elmer Helmholtz)
 Mesh an air cavity, apply rigid walls / prescribed velocity / impedance boundaries, sweep
@@ -279,7 +340,9 @@ AudioAnalysis                       ← container, one per study
 │   └── PorousMaterial              ← JCA parameters, or measured flow resistivity
 ├── Sources & transducers
 │   ├── Driver                      ← moving-coil / balanced-armature / planar / ESL
-│   │                                 holds T-S params, motor data, diaphragm ref
+│   │                                 T-S params, motor data, diaphragm ref, polarity;
+│   │                                 two acoustic ports (FrontNode, BackNode) — several
+│   │                                 Drivers per analysis is the normal case (§2.4)
 │   ├── VelocitySource              ← prescribed normal velocity on a face
 │   ├── PressureSource              ← prescribed pressure on a face
 │   └── PointSource                 ← monopole, for scattering/isolation studies
@@ -290,12 +353,13 @@ AudioAnalysis                       ← container, one per study
 │   ├── LeakPath                    ← parametric slit: length, gap, perimeter
 │   ├── RadiationBoundary           ← PML / infinite element / BEM handoff
 │   └── SymmetryPlane
-├── Lumped network                  ← Tier 1; can coexist with the 3D model
-│   ├── AcousticVolume              ← compliance; volume auto-read from a CAD solid
-│   ├── Port                        ← mass + loss, from CAD or parametric
-│   ├── PassiveRadiator
-│   ├── AcousticResistance
-│   └── CrossoverNetwork            ← R/L/C ladder
+├── Lumped network                  ← Tier 1; can coexist with the 3D model (§6.6)
+│   ├── AcousticNode                ← a volume of air at one pressure; elements join here
+│   ├── AcousticVolume              ← compliance on a node; volume auto-read from CAD
+│   ├── Port                        ← mass + loss between two nodes
+│   ├── PassiveRadiator             ← between two nodes
+│   ├── AcousticResistance          ← damping mesh/screen between two nodes
+│   └── CrossoverNetwork            ← R/L/C ladder, electrical only
 ├── Fixtures                        ← see §6.4 for where the geometry comes from
 │   ├── EarSimulator                ← IEC 60318-1 / -4 / -5, impedance or geometry mode
 │   ├── EarCanalModel               ← generated from ITU-T P.57 Type 4.3/4.4, or imported
@@ -529,7 +593,62 @@ rather than designed features. Extraction has to preserve them, and the workbenc
 warn when a cavity contains a gap thinner than the boundary layer at the top sweep
 frequency.
 
-### 6.6 Round-tripping between lumped and 3D
+### 6.6 The lumped network model
+
+Multi-driver support (§2.4) forces the lumped engine to be a **general network solver**
+rather than a set of enclosure formulas. The model is the standard electro-mechano-
+acoustic analogy: every element is an impedance between two nodes, and each frequency is
+one linear solve.
+
+**Nodes are volumes of air at a common pressure.** An `AcousticNode` is a connection
+point. Three kinds matter:
+
+- an enclosed volume (a back chamber, an ear cavity), carrying a compliance to ground
+- the exterior — free space or the ear simulator, the radiation termination
+- an internal junction with no volume of its own, joining elements
+
+**Elements connect nodes.** Each has a complex, frequency-dependent impedance:
+
+| Element | Connects | Contributes |
+|---|---|---|
+| `Driver` | electrical terminals + **front node** + **back node** | the coupled electro-mechano-acoustic core |
+| `AcousticVolume` | one node to ground | compliance |
+| `Port` / `LeakPath` | two nodes | mass + resistance |
+| `AcousticResistance` | two nodes | damping mesh or screen |
+| `PassiveRadiator` | two nodes | mass, compliance, loss |
+| `RadiationBoundary` | one node to exterior | radiation impedance |
+| `CrossoverNetwork` | electrical only | filter topology |
+
+The key structural point: **a driver has two acoustic ports.** Its front radiates into one
+node and its back into another. That single fact is what lets the same model express a
+sealed box, a vented box, a two-way sharing a back volume, and an isobaric pair — and it
+is why containment-based grouping ("these drivers are inside this volume") is not enough.
+Connections are explicit `App::PropertyLink` references, so an `AudioAnalysis` holding two
+`Driver` objects both pointing their front node at the ear cavity produces their acoustic
+summation automatically from the solve, with correct relative phase.
+
+**Solver choice: native, not ngspice.** Assemble the nodal admittance matrix in NumPy and
+solve per frequency. Two reasons this beats generating a SPICE netlist:
+
+1. Several impedances are not R/L/C. Radiation impedance involves Bessel functions;
+   viscothermal slot impedance involves complex-argument transcendental functions
+   (§2.2). Expressing those in SPICE means awkward behavioural sources or lossy
+   approximations, whereas in NumPy they are one line of closed-form maths.
+2. A frequency sweep is a batch of small dense complex solves — a few tens of unknowns
+   across a few hundred frequencies. NumPy does that in milliseconds, vectorised, with no
+   process launch, no netlist generation and no output parsing.
+
+ngspice remains valuable for **crossover networks specifically** (where everything really
+is R/L/C, and users may want to import existing netlists) and as an independent
+cross-check of the native solver on cases both can express. It stays in the portfolio; it
+is no longer the primary lumped engine.
+
+**Reporting obligations.** Every lumped result carries the validity limit from §2.4.
+Curves are drawn beyond it only when marked — greyed, dashed, or cut off — because a
+confident-looking response plotted to 20 kHz from a model valid to 400 Hz is the single
+easiest way for this tool to mislead its user.
+
+### 6.7 Round-tripping between lumped and 3D
 
 The feature that makes the two-tier approach worth the effort:
 
@@ -635,6 +754,9 @@ Every tier ships with benchmarks whose answers are known independently. Stored u
 | Pulsating and oscillating sphere | Analytic |
 | Rigid piston in an infinite baffle | Analytic (on-axis and directivity) |
 | Sealed and vented box response | Closed-form Thiele–Small alignment |
+| Two drivers sharing a back volume | Coupled solve vs. independent superposition — they must differ, and by the amount theory predicts (§2.4) |
+| Two drivers summing at one node | Complex sum; reversing one driver's polarity must produce the predicted cancellation |
+| Crossover into real driver impedance | Native network solver vs. ngspice on the same netlist |
 | Helmholtz resonator | Analytic + measured |
 | 711-coupler input impedance | IEC 60318-4 published tolerance band |
 | P.57 Type 4.3 ear canal resonances | Published Elmer models (computational-acoustics, CC BY 4.0) |

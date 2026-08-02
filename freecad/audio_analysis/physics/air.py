@@ -226,6 +226,36 @@ class AirProperties:
         """Thermal boundary layer thickness, metres: the viscous layer over sqrt(Pr)."""
         return self.viscous_boundary_layer(frequency) / math.sqrt(self.prandtl_number)
 
+    def helmholtz_number(self, dimension: float, frequency: float) -> float:
+        """``ka`` -- the dimensionless size of a feature relative to the wavelength.
+
+        The standard measure of whether wave behaviour matters. Well below 1, a region
+        responds as a single lumped element; near and above 1, it has internal structure
+        (standing waves, path-length differences) that only a wave solve captures.
+        """
+        if dimension <= 0.0:
+            raise ValueError(f"dimension must be positive, got {dimension} m")
+        return 2.0 * math.pi * frequency * dimension / (2.0 * self.speed_of_sound)
+
+    def lumped_validity_limit(self, largest_dimension: float, fraction: float = 0.125) -> float:
+        """Highest frequency at which a region of this size is still a lumped element.
+
+        A cavity acts as a pure compliance only while its largest dimension is small
+        against the wavelength. The usual engineering criterion is one-eighth of a
+        wavelength; ``fraction`` relaxes or tightens it.
+
+        This matters more than it sounds. An over-ear cup roughly 105 mm across stops
+        behaving as a lumped volume around 400 Hz, so a lumped model of it is honest
+        about the bass and increasingly wrong above that. Reporting the limit alongside
+        every lumped result is how the workbench avoids quietly overstating its range
+        (STRUCTURE.md 5, Tier 1).
+        """
+        if largest_dimension <= 0.0:
+            raise ValueError(f"dimension must be positive, got {largest_dimension} m")
+        if not 0.0 < fraction < 1.0:
+            raise ValueError(f"fraction must lie in (0, 1), got {fraction}")
+        return fraction * self.speed_of_sound / largest_dimension
+
     def mesh_size_for(self, frequency: float, elements_per_wavelength: float = 8.0) -> float:
         """Element size, metres, needed to resolve waves at ``frequency``.
 

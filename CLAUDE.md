@@ -42,6 +42,19 @@ directory. That case directory must stay human-readable and hand-editable.
 has passing validation cases. Tier 1 (lumped) must keep working with zero external solver
 binaries installed.
 
+**Multiple drivers are first-class, from Tier 1.** The owner's own design is a two-way
+over-ear headphone. Never write a single-driver code path: build the lumped engine as a
+**general nodal network solver** (`STRUCTURE.md` §6.6), where a driver has two acoustic
+ports and elements connect explicit nodes. Drivers sharing a volume load each other, so
+they must be solved simultaneously — superposing independent single-driver runs is wrong,
+and most wrong in the crossover region (§2.4). Solve natively in NumPy, not by generating
+SPICE netlists: radiation and viscothermal impedances are not R/L/C.
+
+**Report the lumped validity limit with every lumped result.** A cavity is only a lumped
+element below roughly `c/(8L)` — about 400 Hz for a 105 mm over-ear cup. Use
+`AirProperties.lumped_validity_limit()`. Plotting a confident curve to 20 kHz from a model
+valid to 400 Hz is the easiest way for this tool to mislead.
+
 **Missing binaries degrade gracefully.** A missing `ElmerSolver` disables the relevant
 commands with an explanatory message — never a traceback.
 

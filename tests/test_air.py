@@ -103,6 +103,48 @@ class TestAirProperties:
         assert ratio == pytest.approx(math.sqrt(10.0), rel=1e-6)
         assert props.viscous_boundary_layer(100.0) == pytest.approx(219e-6, rel=5e-2)
 
+    def test_helmholtz_number_is_one_at_the_expected_size(self):
+        # ka == 1 when the radius equals lambda/(2*pi).
+        props = air.AirProperties.at(T20, P_ATM, 0.0)
+        radius = props.wavelength(1000.0) / (2.0 * math.pi)
+        assert props.helmholtz_number(2.0 * radius, 1000.0) == pytest.approx(1.0)
+
+    def test_lumped_validity_limit_of_an_over_ear_cup(self):
+        # A 105 mm cup stops being a lumped volume around 400 Hz. This is the number
+        # that says how much of a two-way headphone Tier 1 can honestly cover.
+        props = air.AirProperties.at(T20, P_ATM, 0.0)
+        assert props.lumped_validity_limit(0.1056) == pytest.approx(406.0, rel=2e-2)
+
+    def test_lumped_validity_limit_of_an_ear_canal_sized_cavity(self):
+        # A 10 mm cavity stays lumped to roughly 4 kHz -- an order of magnitude more
+        # headroom, which is why in-ear lumped models are useful further up the band.
+        props = air.AirProperties.at(T20, P_ATM, 0.0)
+        assert props.lumped_validity_limit(0.010) == pytest.approx(4290.0, rel=2e-2)
+
+    def test_lumped_validity_scales_inversely_with_size(self):
+        props = air.AirProperties.at(T20, P_ATM, 0.0)
+        assert props.lumped_validity_limit(0.05) == pytest.approx(
+            2.0 * props.lumped_validity_limit(0.1)
+        )
+
+    def test_stricter_fraction_lowers_the_limit(self):
+        props = air.AirProperties.at(T20, P_ATM, 0.0)
+        assert props.lumped_validity_limit(0.1, fraction=1 / 16) < props.lumped_validity_limit(0.1)
+
+    @pytest.mark.parametrize("bad", [0.0, -0.1])
+    def test_rejects_nonphysical_dimension(self, bad):
+        props = air.AirProperties.at()
+        with pytest.raises(ValueError):
+            props.lumped_validity_limit(bad)
+        with pytest.raises(ValueError):
+            props.helmholtz_number(bad, 1000.0)
+
+    @pytest.mark.parametrize("bad", [0.0, 1.0, 1.5])
+    def test_rejects_invalid_fraction(self, bad):
+        props = air.AirProperties.at()
+        with pytest.raises(ValueError):
+            props.lumped_validity_limit(0.1, fraction=bad)
+
     def test_mesh_size_at_20k(self):
         props = air.AirProperties.at(T20, P_ATM, 0.0)
         # ~2 mm elements to resolve 20 kHz at 8 elements per wavelength.
