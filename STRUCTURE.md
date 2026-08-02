@@ -204,7 +204,7 @@ Which engine handles which question:
 A key workflow consequence: **the lumped model and the 3D model must share parameters.**
 A `Driver` object holds Thiele–Small parameters; the lumped solver consumes them directly,
 and the 3D solver uses them to drive the diaphragm boundary. Better still, the 3D solver
-can *extract* them (§6.5), closing the loop.
+can *extract* them (§6.6), closing the loop.
 
 ---
 
@@ -454,7 +454,59 @@ credibly.
 Target curves (Harman, diffuse-field, free-field) are still **loaded as user data files**,
 not shipped. The workbench provides the overlay and deviation-scoring machinery.
 
-### 6.5 Round-tripping between lumped and 3D
+### 6.5 Geometry input — containers, and the fluid-domain problem
+
+**Every FreeCAD container works.** Verified against FreeCAD 1.1.1:
+
+| Container | Exposes `Shape` | Notes |
+|---|---|---|
+| `Part` primitives, boolean results | yes | the simple case |
+| `PartDesign::Body` | yes | one solid per body |
+| `App::Link` | yes | link placement applied |
+| `App::Part` container | yes | compound of children, container placement applied |
+| `Assembly::AssemblyObject` | yes (when non-empty) | derives from `App::Part`; reports the *assembled* configuration |
+
+So an earphone modelled as a multi-body assembly reads correctly, and a headphone is far
+more likely to be an assembly than a single solid. Two consequences are worth stating
+plainly, because both are easy to get wrong quietly.
+
+**A child's shape is in local coordinates; a container's is global.** A part nested inside
+an assembly reports its `Shape` in its own frame — a box at the assembly's `x = 50` still
+reports `BoundBox.XMin = 0`. Volume is invariant under rigid transforms, so Tier 0's
+measurement is correct regardless. **Positions are not.** Any face reference, mesh, probe
+location or boundary condition taken from a child must be resolved through
+`getGlobalPlacement()`, or it will be silently displaced by the assembly transform — a
+mispositioned probe reports a plausible pressure at the wrong place. `geometry.py`
+provides `global_placement_of()` for this; from Tier 2 onward every positional path must
+use it.
+
+**What gets simulated is the air, not the parts.** This is the bigger point and it is
+independent of which container the user chose. A PartDesign body of an earphone shell is
+the *plastic*. The acoustic domain is the cavity the plastic encloses — the front volume,
+the back volume, the nozzle bore, the vent channel. So the workflow always includes a
+**fluid-domain extraction** step:
+
+1. **Model the air directly** as its own solid. Most explicit, and what experienced
+   simulation users tend to do anyway.
+2. **Derive it by subtraction** — a bounding solid minus the assembly's parts, giving the
+   enclosed void. Convenient and the obvious candidate for automation, but fragile if the
+   assembly is not watertight.
+3. **Cap and close** an open cavity by adding faces across its openings, which then become
+   the ports where sources, impedance terminations and leaks attach.
+
+`AcousticDomain` therefore references *a solid representing air*, not a part. Route 2
+deserves a dedicated command ("extract cavity from assembly") once meshing lands at
+Tier 2; it is the step most likely to be tedious by hand and it is where an
+assembly-aware workbench earns its keep over exporting STEP to a standalone tool.
+
+A related consequence for Tier 3: the thin gaps that dominate earphone behaviour — the
+slot around a diaphragm, a 0.1 mm vent — are exactly the features most likely to be
+absent or idealised in a mechanical CAD model, since they are manufacturing clearances
+rather than designed features. Extraction has to preserve them, and the workbench should
+warn when a cavity contains a gap thinner than the boundary layer at the top sweep
+frequency.
+
+### 6.6 Round-tripping between lumped and 3D
 
 The feature that makes the two-tier approach worth the effort:
 

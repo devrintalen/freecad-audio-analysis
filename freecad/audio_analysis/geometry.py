@@ -56,25 +56,60 @@ class NoSolidError(ValueError):
 def measure_volume(obj: Any) -> VolumeMeasurement:
     """Measure the enclosed volume of a FreeCAD object's shape.
 
+    Works for any object that exposes a shape, which in practice is all of them:
+    ``Part`` primitives, ``PartDesign`` bodies, ``App::Link`` instances, ``App::Part``
+    containers and assemblies. Containers report a compound of their children with
+    placements applied, so an assembly returns its assembled total.
+
     Sums over all solids in the shape, so a multi-solid part reports its total. Raises
     :class:`NoSolidError` for anything without a solid -- a sketch, a bare surface, or an
     open shell -- because those have no enclosed volume, and silently returning zero
     would be indistinguishable from a genuinely empty cavity.
+
+    Note that volume is invariant under rigid transforms, so it is correct regardless of
+    where an object sits in an assembly. Positions are not: see
+    :func:`global_placement_of`.
     """
     shape = getattr(obj, "Shape", None)
-    if shape is None:
-        raise NoSolidError(f"{obj.Name} has no shape to measure")
+    label = getattr(obj, "Label", getattr(obj, "Name", "object"))
+
+    if shape is None or shape.isNull():
+        # An empty container is the common case here, and worth naming explicitly --
+        # "has no shape" would send the user looking for a modelling error instead.
+        if hasattr(obj, "Group"):
+            raise NoSolidError(
+                f"{label} is an empty container. Add geometry to it, or select the "
+                f"solids inside it directly."
+            )
+        raise NoSolidError(f"{label} has no shape to measure")
 
     solids = getattr(shape, "Solids", [])
     if not solids:
         raise NoSolidError(
-            f"{obj.Label} contains no solid. An acoustic cavity must be a closed solid; "
+            f"{label} contains no solid. An acoustic cavity must be a closed solid; "
             f"a surface or open shell encloses no volume."
         )
 
     total_mm3 = sum(solid.Volume for solid in solids)
     label = getattr(obj, "Label", obj.Name)
     return VolumeMeasurement(label=label, volume_mm3=total_mm3, solid_count=len(solids))
+
+
+def global_placement_of(obj: Any) -> Any:
+    """The object's placement in global coordinates.
+
+    Needed because of a trap that will bite from Tier 2 onward: a container's own
+    ``Shape`` is already in global coordinates, but a **child's** ``Shape`` is expressed
+    in the child's local frame. So a face picked on a part nested inside an assembly
+    reports local coordinates, and a mesh or probe positioned from it would be silently
+    displaced by the assembly transform.
+
+    Volume is unaffected -- it is invariant under rigid transforms -- which is why Tier 0
+    can ignore this. Anything positional must not.
+    """
+    if hasattr(obj, "getGlobalPlacement"):
+        return obj.getGlobalPlacement()
+    return getattr(obj, "Placement", None)
 
 
 def measure_volumes(objects: Sequence[Any]) -> tuple[list[VolumeMeasurement], list[str]]:

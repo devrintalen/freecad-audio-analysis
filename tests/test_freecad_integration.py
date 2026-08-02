@@ -211,6 +211,109 @@ class TestGeometry:
         assert "Sketch" in problems[0]
 
 
+class TestContainerGeometry:
+    """Geometry must be readable however the user chose to model it.
+
+    FreeCAD offers several containers -- PartDesign bodies, App::Part groups, links, and
+    assemblies -- and a headphone is far more likely to be an assembly than a single
+    solid. Volume is invariant under rigid transforms, so it reads correctly from all of
+    them; positions are a separate matter, covered by the placement test below.
+    """
+
+    def test_partdesign_body(self, doc):
+        import Part
+
+        body = doc.addObject("PartDesign::Body", "Body")
+        sketch = doc.addObject("Sketcher::SketchObject", "Sketch")
+        body.addObject(sketch)
+        for start, end in (
+            ((0, 0, 0), (50, 0, 0)),
+            ((50, 0, 0), (50, 50, 0)),
+            ((50, 50, 0), (0, 50, 0)),
+            ((0, 50, 0), (0, 0, 0)),
+        ):
+            sketch.addGeometry(
+                Part.LineSegment(FreeCAD.Vector(*start), FreeCAD.Vector(*end)), False
+            )
+        pad = doc.addObject("PartDesign::Pad", "Pad")
+        body.addObject(pad)
+        pad.Profile = sketch
+        pad.Length = 20.0
+        doc.recompute()
+
+        # 50 x 50 x 20 mm
+        assert measure_volume(body).volume_mm3 == pytest.approx(50000.0)
+
+    def test_app_part_container_sums_its_children(self, doc):
+        part = doc.addObject("App::Part", "Container")
+        for i in range(2):
+            box = doc.addObject("Part::Box", f"Box{i}")
+            box.Length = box.Width = box.Height = 10.0
+            box.Placement.Base.x = i * 50.0
+            part.addObject(box)
+        doc.recompute()
+
+        measurement = measure_volume(part)
+        assert measurement.volume_mm3 == pytest.approx(2000.0)
+        assert measurement.solid_count == 2
+
+    def test_link_carries_its_placement(self, doc):
+        box = doc.addObject("Part::Box", "Box")
+        box.Length = box.Width = box.Height = 10.0
+        link = doc.addObject("App::Link", "Link")
+        link.LinkedObject = box
+        link.Placement.Base.x = 100.0
+        doc.recompute()
+
+        assert measure_volume(link).volume_mm3 == pytest.approx(1000.0)
+        assert link.Shape.BoundBox.XMin == pytest.approx(100.0)
+
+    def test_assembly(self, doc):
+        pytest.importorskip("Assembly")
+
+        box = doc.addObject("Part::Box", "Box")
+        box.Length = box.Width = box.Height = 10.0
+        assembly = doc.addObject("Assembly::AssemblyObject", "Assembly")
+        link = doc.addObject("App::Link", "Link")
+        link.LinkedObject = box
+        link.Placement.Base.x = 50.0
+        assembly.addObject(link)
+        doc.recompute()
+
+        measurement = measure_volume(assembly)
+        assert measurement.volume_mm3 == pytest.approx(1000.0)
+        # The assembly's shape reflects the assembled position, not the part's origin.
+        assert assembly.Shape.BoundBox.XMin == pytest.approx(50.0)
+
+    def test_empty_container_is_rejected_clearly(self, doc):
+        part = doc.addObject("App::Part", "EmptyContainer")
+        doc.recompute()
+        with pytest.raises(NoSolidError, match="empty"):
+            measure_volume(part)
+
+    def test_container_placement_applies_but_child_shape_stays_local(self, doc):
+        """The coordinate-frame trap that matters from Tier 2 onward.
+
+        A container's own Shape is in global coordinates, but a child's Shape is in the
+        child's local frame. Referencing a face on a child inside an assembly therefore
+        yields local coordinates, and meshing or probe placement built on that would be
+        silently mispositioned. ``getGlobalPlacement()`` is the resolution.
+        """
+        part = doc.addObject("App::Part", "Placed")
+        box = doc.addObject("Part::Box", "Box")
+        box.Length = box.Width = box.Height = 10.0
+        part.addObject(box)
+        part.Placement.Base.y = 200.0
+        doc.recompute()
+
+        assert part.Shape.BoundBox.YMin == pytest.approx(200.0)  # container: global
+        assert box.Shape.BoundBox.YMin == pytest.approx(0.0)  # child: local
+        assert box.getGlobalPlacement().Base.y == pytest.approx(200.0)
+
+        # Volume is unaffected either way, which is why Tier 0 is safe.
+        assert measure_volume(part).volume_mm3 == pytest.approx(1000.0)
+
+
 class TestSolverDiscovery:
     def test_reports_known_solvers(self):
         from freecad.audio_analysis.solvers import discovery
