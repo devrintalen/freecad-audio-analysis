@@ -45,9 +45,15 @@ binaries installed.
 **Missing binaries degrade gracefully.** A missing `ElmerSolver` disables the relevant
 commands with an explanatory message — never a traceback.
 
-**Don't ship encumbered data.** IEC 60318 ear-simulator geometry and commercial target
-curves (Harman etc.) are not redistributable. Fixtures default to impedance-based models;
-target curves are user-loaded files. See `STRUCTURE.md` §6.4.
+**Ear geometry is a solved problem — use the right source.** See `STRUCTURE.md` §6.4.
+- **Ear canal / concha / pinna simulator** → ITU-T P.57 (06/2021), a *free* standard whose
+  annexes give full tabulated cross-sections. `acoupy_ears` (MIT) already implements it and
+  emits Gmsh/STL. Depend on it; don't re-derive, and don't vendor the ITU tables.
+- **Exterior head / pinna / torso** → HUTUBS (CC BY 4.0, 96 subjects) is the default;
+  SONICOM (CC BY) is larger. Both are **blocked-meatus** — no ear canal — so they cannot
+  model in-ear devices on their own.
+- **IEC 60318** geometry stays paywalled, and commercial target curves (Harman etc.) are
+  not redistributable. Impedance-based fixtures and user-loaded target curves cover those.
 
 ## Environment
 

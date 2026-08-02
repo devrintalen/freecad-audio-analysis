@@ -140,6 +140,7 @@ problem class.
 | **[Bempp-cl](https://bempp.com/)** | Permissive (verify per release) | Alternative/second-opinion BEM, scriptable from Python, good for interior–exterior coupling | Active, research-grade |
 | **[ngspice](https://ngspice.sourceforge.io/)** | BSD-style | Lumped equivalent-circuit solving (Thiele–Small, crossovers, transducer networks) | Very mature |
 | **[pyfar](https://pyfar.org/) / sofar** | MIT | Frequency-response objects, smoothing, plotting, SOFA I/O for directivity data | Active |
+| **[acoupy_ears](https://gitlab.com/acoupy/acoupy_ears)** | MIT | Generates ITU-T P.57 anatomical ear canal / concha / pinna geometry as Gmsh models or STL (§6.4) | Small but sufficient |
 | **NumPy / SciPy** | BSD | Native lumped-network assembly, analytic models, post-processing | — |
 | **VTK** | BSD | Field visualisation — **already FreeCAD's FEM post-processing pipeline** | — |
 | **[FEniCSx](https://fenicsproject.org/) / scikit-fem** | LGPL / BSD | Escape hatch for formulations Elmer lacks | Active |
@@ -295,9 +296,10 @@ AudioAnalysis                       ← container, one per study
 │   ├── PassiveRadiator
 │   ├── AcousticResistance
 │   └── CrossoverNetwork            ← R/L/C ladder
-├── Fixtures
-│   ├── EarSimulator                ← IEC 60318-1 / -4 / -5 model (see §6.4)
-│   ├── EarCanalModel               ← parametric or scanned canal geometry
+├── Fixtures                        ← see §6.4 for where the geometry comes from
+│   ├── EarSimulator                ← IEC 60318-1 / -4 / -5, impedance or geometry mode
+│   ├── EarCanalModel               ← generated from ITU-T P.57 Type 4.3/4.4, or imported
+│   ├── HeadModel                   ← imported CC-licensed head/pinna/torso scan
 │   ├── InfiniteBaffle
 │   └── FreeField
 ├── Probes
@@ -354,29 +356,103 @@ smoothing, resampling, and SOFA export.
 **Expression support.** Every numeric property must be an `App::Property*` participating
 in FreeCAD's expression engine, so a spreadsheet can drive an entire design study.
 
-### 6.4 Measurement fixtures — an honest note
+### 6.4 Ear and head geometry — where it comes from
 
-Meaningful headphone results require terminating into a **standardised ear simulator**:
+A headphone model must terminate into something ear-shaped; "open air" is meaningless
+(§2.2). There are **two distinct geometry needs**, and they have different sources:
 
-- **IEC 60318-1** — artificial ear for supra-aural/circumaural headphones
+| Need | What it's for | Source |
+|---|---|---|
+| **Ear canal + concha + pinna simulator** | In-ear/IEM work, occluded response, the SPL at the eardrum | ITU-T P.57 (free standard) |
+| **Exterior head + pinna + torso** | Over/on-ear cup coupling, seal leakage, passive isolation, HRTF, diffraction | CC-licensed scan databases |
+
+#### Route A — ITU-T P.57, a *freely available* standard with full geometry
+
+This is the important find, and it changes the picture from what a first look at IEC
+suggests. **ITU-T Recommendation P.57 (06/2021), "Artificial ears", is downloadable at no
+cost** — the ITU made its recommendations free to all in 2007. It defines anatomically
+shaped artificial ears, and its annexes give the geometry as **tabulated cross-section
+coordinates in millimetres**, not just pictures:
+
+- **Annex B — Type 4.3 artificial ear** (~32 pages): cross sections of the ear canal along
+  its centreline (25 points per section, ≤1.1 mm spacing, at 0.5/2/4/6/8/10…32.5 mm), the
+  concha bottom, and the pinna simulator, plus the plane positions and normals needed to
+  place them in 3D.
+- **Annex C — Type 4.4 artificial ear**: the same treatment for the other anatomical type.
+- **Annex A**: a procedure for determining the acoustic input impedance of artificial ears
+  — directly useful for the impedance route below.
+- **Appendix I**: measured input impedance of artificial ears types 3.3/3.4 *and of real
+  human ears*, which is validation data we would otherwise have to buy or measure.
+
+That is a complete, loftable definition of an anatomical ear canal + concha + pinna. Type
+4.3 also terminates in an IEC 60318-4-style ear simulator, so it connects the free
+anatomical geometry to the standard in-ear measurement chain.
+
+**Existing implementation:** [`acoupy_ears`](https://gitlab.com/acoupy/acoupy_ears)
+(**MIT**, Stefano Tronci) already implements P.57 ear geometry in Python. It ships the
+cross-section data, interpolates the section loops, and emits **Gmsh models and STL** via
+`build_gmsh_model()` / `build_surface_mesh()` — which is exactly our meshing path, so
+integration is a thin adapter rather than a port. Dependencies are numpy/scipy/polars/
+gmsh/numpy-stl. The same author's
+[computational-acoustics](https://computational-acoustics.gitlab.io/website/) project has
+worked Elmer ear-canal models under CC BY 4.0, on the same solver stack we chose — useful
+as a cross-check for our Tier 2/3 results.
+
+**Redistribution posture:** the ITU asserts copyright over the *publication*. Dimensional
+facts generally aren't copyrightable but table arrangement can be, so we do **not** vendor
+the P.57 tables into this repo. We depend on `acoupy_ears`, or generate from the user's own
+download. (Practical posture, not legal advice — worth a second look before any release.)
+
+#### Route B — CC-licensed head and pinna scan databases
+
+For everything outside the canal, several databases are openly licensed:
+
+| Database | Contents | Licence |
+|---|---|---|
+| **[HUTUBS](https://depositonce.tu-berlin.de/items/dc2a3076-a291-417e-97f0-7697e332c960)** (TU Berlin) | 96 subjects: measured + simulated HRTFs, 3D head meshes, 25 anthropometric features, headphone transfer functions | **CC BY 4.0** |
+| **[SONICOM](https://www.sonicom.eu/tools-and-resources/hrtf-dataset/)** | up to 300 subjects; ~200 with 3D scans of ears, head and torso, pre-processed for Mesh2HRTF | **CC BY** |
+| **[SYMARE](http://www.morphoacoustics.org/symare-database.html)** (Sydney/York) | 61 subjects from MRI: upper torso + head + ears, meshes pre-decimated for BEM at 4/8/12/16/20 kHz | verify before use |
+| **Mesh2HRTF examples** | reference head meshes shipped with the BEM solver | EUPL v1.2+ |
+| **Aachen high-resolution KEMAR** | HRTFs + high-res 3D scan of the KEMAR manikin | verify before use |
+
+HUTUBS is the best default: permissive licence, high-resolution ear scans (Artec Space
+Spider for the pinnae, Kinect for the head), and cross-validated measured *and* simulated
+HRTFs — so the mesh arrives with a known-good answer attached, which makes it a validation
+case as well as a geometry source.
+
+**The critical caveat: these are blocked-meatus scans.** Surface scanning cannot reach into
+the ear canal, so the canal is occluded at its entrance and the meshes contain external
+geometry only. That is fine for HRTF work (the canal is treated as direction-independent)
+and fine for over-ear cup coupling and isolation, but it means **Route B alone cannot give
+in-ear results**. Combining Route A's canal with Route B's pinna is how we get a complete
+in-ear model.
+
+#### Route C — impedance-based termination *(always available, no geometry at all)*
+
+Represent the simulator by its acoustic input impedance as a `TransferImpedance`
+termination or lumped network. Still the default for Tier 1, still the fallback when no
+geometry is licensed, and still the only route that speaks directly to the IEC standards:
+
+- **IEC 60318-1** — artificial ear, supra-aural/circumaural
 - **IEC 60318-4** — occluded-ear simulator ("711 coupler"), the in-ear standard
 - **IEC 60318-5** — 2 cm³ coupler, hearing-aid work
 
-The dimensioned geometries live in paywalled IEC standards, and real fixtures
-(GRAS, B&K) are proprietary. We therefore support three routes, in this order:
+These remain paywalled and real fixtures (GRAS, B&K) remain proprietary, but their
+*impedance* behaviour is published widely enough — including in P.57 Appendix I — to model
+credibly.
 
-1. **Impedance-based** *(default, always available)* — represent the simulator by its
-   published/analytic acoustic input impedance as a `TransferImpedance` termination or a
-   lumped network. Correct to the frequency where the standard's tolerance applies, and
-   legally unencumbered.
-2. **User-supplied geometry** — the user imports their own CAD of a fixture they own or
-   are licensed for.
-3. **Parametric ear canal** — a generated canal + eardrum-impedance termination, useful
-   for anatomical studies where standards conformance is not the goal.
+#### Consequences for the workbench
 
-Target curves (Harman, diffuse-field, free-field) are **loaded as user data files**, not
-shipped, for the same reason. The workbench provides the overlay and deviation-scoring
-machinery.
+- `EarCanalModel` gains a **generator** backed by `acoupy_ears`: pick P.57 Type 4.3 or 4.4
+  and a canal length, get a solid in the document. No user CAD required.
+- `EarSimulator` keeps the impedance route as its default and gains a geometry mode.
+- A new **head/pinna import** helper handles the scan databases: load mesh, orient to the
+  ear reference point, decimate to the target frequency, hand to BEM.
+- HUTUBS becomes a **validation case** (§9): simulate its meshes, compare against its own
+  measured and simulated HRTFs.
+
+Target curves (Harman, diffuse-field, free-field) are still **loaded as user data files**,
+not shipped. The workbench provides the overlay and deviation-scoring machinery.
 
 ### 6.5 Round-tripping between lumped and 3D
 
@@ -486,6 +562,9 @@ Every tier ships with benchmarks whose answers are known independently. Stored u
 | Sealed and vented box response | Closed-form Thiele–Small alignment |
 | Helmholtz resonator | Analytic + measured |
 | 711-coupler input impedance | IEC 60318-4 published tolerance band |
+| P.57 Type 4.3 ear canal resonances | Published Elmer models (computational-acoustics, CC BY 4.0) |
+| Artificial-ear and human-ear input impedance | ITU-T P.57 Appendix I measured data |
+| HRTF of a HUTUBS subject mesh | HUTUBS's own measured *and* simulated HRTFs (cross-validated) |
 | A real headphone the user owns | Measured response |
 
 The last one matters most. **A simulation stack nobody has correlated against a physical
@@ -501,7 +580,8 @@ headphone early, and treat that correlation as the acceptance test for Tier 3.
 | Elmer's thermoviscous solver is expensive and can be numerically stiff | Restrict it to small sub-models; use lossless Helmholtz + lumped losses elsewhere; consider the low-reduced-frequency approximation as a middle tier |
 | Boundary-layer meshing is fiddly and easy to get wrong | Automate layer thickness from the top sweep frequency; warn loudly when a region is under-resolved |
 | Material data (mesh resistances, diaphragm damping) is rarely published | Provide impedance-extraction workflows and a user-editable material library; accept measured data as input |
-| Standardised fixture geometry is not freely available | Impedance-based fixtures as the default path (§6.4) |
+| Standardised fixture geometry is not freely available | *Largely resolved:* ITU-T P.57 is free and fully dimensioned, with an MIT implementation; CC-licensed head/pinna databases cover the exterior. Impedance-based fixtures remain the fallback (§6.4) |
+| Open head scans are blocked-meatus, so they cannot model in-ear devices alone | Combine P.57 canal geometry (Route A) with scanned pinna geometry (Route B) |
 | Scope creep — this could become COMSOL | Tiered plan; each tier independently shippable; stretch items explicitly quarantined in Tier 5 |
 | FreeCAD FEM internals shift between releases | Wrap all FEM-workbench interaction behind a thin adapter module; pin a minimum FreeCAD version |
 
@@ -516,7 +596,7 @@ Surveyed 2026-08-02 on the development machine:
 | FreeCAD | **1.1.1** at `/usr/bin/FreeCAD`, FEM module present at `/usr/lib64/freecad/Mod/Fem` |
 | ngspice | installed (`/usr/bin/ngspice`) |
 | NumPy / SciPy | 2.4.6 / 1.17.1 |
-| Gmsh | **not on PATH** — check whether FreeCAD bundles it internally; otherwise install |
+| Gmsh | **not on PATH** — FreeCAD ships only the driver (`Mod/Fem/femmesh/gmshtools.py`), not the binary. `pip install gmsh` supplies both binary and Python API, and is already an `acoupy_ears` dependency |
 | Elmer (`ElmerSolver`, `ElmerGrid`) | **not installed** — required from Tier 2 onward |
 | NumCalc | **not installed** — required from Tier 4 onward |
 
@@ -549,6 +629,11 @@ to make adding solvers easier, which is exactly the seam we hook into.
 - **PML** — perfectly matched layer; an absorbing outer FEM region emulating open space
 - **JCA** — Johnson–Champoux–Allard, a five-parameter porous material model
 - **DRP** — drum reference point, the measurement location at the simulated eardrum
+- **EEP / ERP** — ear entrance point / ear reference point; the canal-entrance and
+  reference locations used to align ear geometry between datasets and standards
+- **Pinna** — the visible outer ear; **concha** — the bowl-shaped cavity leading to the canal
+- **Blocked meatus** — a scan or measurement with the ear canal sealed at its entrance;
+  the normal condition for optically scanned head databases
 - **HRTF** — head-related transfer function; how a head and ears filter incoming sound
 - **SOFA** — standard file format (AES69) for spatially distributed acoustic data
 - **SIF** — solver input file, Elmer's case description format
