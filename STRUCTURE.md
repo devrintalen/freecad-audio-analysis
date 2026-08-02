@@ -422,6 +422,54 @@ in FreeCAD's expression engine, so a spreadsheet can drive an entire design stud
 
 ### 6.4 Ear and head geometry — where it comes from
 
+#### Do I have to put an ear in my CAD?
+
+**No — and room acoustics is never the fallback.** Two things get conflated here, so to be
+explicit:
+
+*Room acoustics is a different problem class and is out of scope* (§1). It solves for
+metres and seconds using ray tracing and statistical methods; headphone work solves for
+centimetres and wave behaviour. An unclosed headphone model does not "become" a room
+model. It becomes either an ill-posed problem, or — if you let the driver radiate into
+open space — a *free-field* analysis, which answers "what does this cup do as a tiny
+loudspeaker in open air". That is a legitimate Tier 4 question, useful for checking a
+driver or studying leak-dominated behaviour, but it is not headphone response.
+
+*The acoustic domain does have to be closed*, though, and this is what "not bounded"
+meant earlier: it was a statement about geometry, not a demand for a head model. The air
+volume needs a boundary everywhere, and where the ear would be there is currently nothing.
+
+**The ear is a load, not necessarily a geometry** (§2.2). That gives three ways to close
+the model, and only one of them involves ear CAD:
+
+| Route | What you add to CAD | What you get |
+|---|---|---|
+| **C — impedance** | a flat **cap face** across the cup opening | SPL at the ear, with the ear represented by its acoustic input impedance. No ear geometry at all. This is what an IEC 60318-1 artificial ear *is* physically, and it is standard engineering practice |
+| **A — P.57 canal** | generated canal/concha geometry | resolved canal resonances; the in-ear case |
+| **B — scanned pinna/head** | a CC-licensed head mesh | pinna and concha shape, seal and leak paths, passive isolation |
+
+Route C is the default and needs one disc-shaped face, not a head. Reach for A or B when
+cavity *shape* starts to matter — above roughly 1 kHz for an over-ear cup, where the
+volume stops behaving as a lumped compliance (§2.4) — or when the question is specifically
+about the seal, leakage, or isolation.
+
+#### What this means for the driver_cup model
+
+Measured on the real assembly: the cup is a shell filling 10% of its bounding box, **open
+at the ear side** (Y ≈ −1) and **closed at the back** (Y ≈ 44, an essentially full disc).
+So the ear plane is well defined and a cap there is straightforward.
+
+But capping the ear plane alone does *not* seal the volume — extraction still finds
+interior and exterior connected. There are further openings: gaps between the cup, plate
+and retainers, and reduced wall sections around Y ≈ 20. Acoustically that is not
+necessarily a modelling defect — leakage dominates headphone bass response, and a real
+cup does leak — but it means the fluid domain must be **constructed deliberately** rather
+than extracted automatically. In practice: cap the ear plane, then either close the
+incidental gaps or declare them as `LeakPath` elements with a measured or estimated
+impedance. Deciding which gaps are real leaks and which are CAD artefacts is a judgement
+the user has to make, so the extraction command must present them rather than silently
+filling them.
+
 A headphone model must terminate into something ear-shaped; "open air" is meaningless
 (§2.2). There are **two distinct geometry needs**, and they have different sources:
 
