@@ -20,8 +20,11 @@ ICONS = {
     "Audio::Leak": "Leak",
     "Audio::Radiation": "Radiation",
     "Audio::PassiveRadiator": "Volume",
+    "Audio::Crossover": "Crossover",
     "Audio::FrequencySweep": "Sweep",
     "Audio::SolverLumped": "Solve",
+    "Audio::ParameterSweep": "Sweep",
+    "Audio::TargetCurve": "Target",
 }
 
 
@@ -38,4 +41,18 @@ class ViewProviderNetworkObject(ViewProviderAudioObject):
         return icon(name)
 
     def claimChildren(self) -> list[Any]:
+        """Nest the elements filed under this node, so the tree reads as a topology.
+
+        The analysis is the only group, so the candidates are its members; an object
+        outside any analysis claims nothing.
+        """
+        from freecad.audio_analysis.objects.network_objects import tree_children
+
+        obj = getattr(self, "Object", None)
+        if obj is None:
+            return []
+        for parent in obj.InList:
+            members = getattr(parent, "Group", None)
+            if members and obj in members:
+                return tree_children(obj, list(members))
         return []

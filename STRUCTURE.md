@@ -675,6 +675,35 @@ Connections are explicit `App::PropertyLink` references, so an `AudioAnalysis` h
 `Driver` objects both pointing their front node at the ear cavity produces their acoustic
 summation automatically from the solve, with correct relative phase.
 
+**Showing a graph in a tree.** A lumped network is a graph — an element joins two nodes, a
+node carries many elements — so there is no single correct parent for anything, and a flat
+list under the analysis loses the topology entirely. Each element is therefore filed under
+the **first node it connects**, which turns the tree into an adjacency list:
+
+```
+AudioAnalysis
+├── Environment
+├── EarCavity
+│   ├── Woofer     [EarCavity -> CupCavity]
+│   ├── Tweeter    [EarCavity -> TweeterChamber]
+│   └── PadSeal    [EarCavity -> exterior]
+├── CupCavity
+│   └── RearVent   [CupCavity -> BehindMesh]
+├── BehindMesh
+│   └── VentMesh   [BehindMesh -> exterior]
+├── LowPass        [feeds Woofer]
+└── LumpedSolver
+```
+
+The far end of every element is written into its `Label2`, which FreeCAD's tree can show
+as a description column, so the choice of parent hides nothing. An `AcousticVolume` also
+claims the solid it measures itself from, putting the extracted air with the acoustic
+object that uses it. Every object is claimed by exactly one owner — the analysis lists
+only what nothing else claims — because appearing twice would be worse than a flat list.
+
+An element with every terminal on the exterior has no parent and stays at the top level,
+where being conspicuous is the right outcome: it is almost always a wiring mistake.
+
 **Solver choice: native, not ngspice.** Assemble the nodal admittance matrix in NumPy and
 solve per frequency. Two reasons this beats generating a SPICE netlist:
 
@@ -760,6 +789,29 @@ expectation, say why, and point at the experiment.
 Curves are drawn beyond it only when marked — greyed, dashed, or cut off — because a
 confident-looking response plotted to 20 kHz from a model valid to 400 Hz is the single
 easiest way for this tool to mislead its user.
+
+**The limit is attributed, and it is a slope rather than a cliff.** Each element answers
+for the dimension that governs it — a cavity its widest span, a port its effective length
+or mouth, a mesh the aperture it covers, a diaphragm its diameter, a leak its *depth*
+rather than the earpad perimeter — and the narrowest wins. Piston radiation answers with
+nothing, because the Bessel/Struve expression is exact at every `ka` and is not a lumped
+approximation at all.
+
+Quoting only the minimum hides too much. An over-ear analysis always expires at the cup,
+which reads as though the whole model dies at 400 Hz; in the same analysis the pad seal is
+valid to 10.7 kHz, the rear vent to 1.3 kHz, the tweeter chamber to 2.2 kHz. Knowing which
+part binds is what turns "this is invalid" into a decision about where a 3D solve would buy
+something — and says that the leak model, which dominates measured bass, was never the weak
+link.
+
+Two thresholds are reported, because the lumped error is `kL·cot(kL)`: 0.45 dB at λ/16,
+2.1 dB at λ/8, 5.9 dB not far above. Plots shade three bands accordingly, the middle one
+being where the answer is worth reading and worth distrusting.
+
+A cavity's span comes from the extracted solid when one is linked. Without one it is
+guessed from the volume by assuming a sphere — the most compact shape there is, hence the
+most optimistic answer available, overstating a 200 cm³ cup's limit by 46% in the direction
+that flatters the model. That guess is a warning, not a silent default.
 
 ### 6.7 How network objects relate to CAD geometry
 

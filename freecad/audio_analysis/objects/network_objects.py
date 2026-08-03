@@ -38,6 +38,77 @@ def quantity(value: float, unit: str) -> FreeCAD.Units.Quantity:
 class NetworkObject(AudioObject):
     """Base for every object that becomes a node or an element."""
 
+    #: Link properties naming the nodes this object connects, in order. Empty for the
+    #: objects that *are* nodes. The first one that is set decides where the object sits
+    #: in the tree, which is what turns a flat list into a readable adjacency list.
+    NODES: tuple[str, ...] = ()
+
+    # -- recompute ---------------------------------------------------------------------
+    # Subclasses override ``update``; ``execute`` is reserved so the base can refresh the
+    # tree description afterwards without every subclass having to remember to.
+
+    def execute(self, obj: Any) -> None:
+        self.update(obj)
+        self.describe_connections(obj)
+
+    def update(self, obj: Any) -> None:
+        """Recompute derived values. Override this rather than :meth:`execute`."""
+
+    # -- topology ----------------------------------------------------------------------
+
+    def primary_node(self, obj: Any) -> Any | None:
+        """The node this element is filed under in the tree.
+
+        The first connection that is actually set. An element with every terminal on the
+        exterior has no parent and stays at the top level, where being conspicuous is the
+        right outcome -- it is usually a wiring mistake.
+        """
+        for name in self.NODES:
+            node = getattr(obj, name, None)
+            if node is not None:
+                return node
+        return None
+
+    def connection_text(self, obj: Any) -> str:
+        """``"EarCavity -> CupCavity"``, for the tree's description column."""
+        if not self.NODES:
+            return ""
+        parts = [
+            getattr(obj, name).Label if getattr(obj, name, None) is not None else "exterior"
+            for name in self.NODES
+        ]
+        return " -> ".join(parts)
+
+    def describe_connections(self, obj: Any) -> None:
+        """Write the connection summary into ``Label2``, FreeCAD's description field.
+
+        The tree can show it as a second column, and it is what makes a topology
+        legible without clicking each object in turn. Never touched when the object has
+        no connections, so a user's own note is not overwritten.
+        """
+        text = self.connection_text(obj)
+        if text:
+            obj.Label2 = text
+
+    def onChanged(self, obj: Any, prop: str) -> None:
+        """Keep neighbours' descriptions current when this object is renamed.
+
+        FreeCAD does not treat a label change as a reason to recompute the objects that
+        link to it, so without this the tree would keep showing the old name until
+        something else forced a recompute. A description that quietly disagrees with the
+        model is worse than no description.
+        """
+        if prop != "Label":
+            return
+        for dependent in getattr(obj, "InList", []):
+            describe = getattr(getattr(dependent, "Proxy", None), "describe_connections", None)
+            if not callable(describe):
+                continue
+            try:
+                describe(dependent)
+            except AttributeError:
+                pass  # Mid-restore: properties are not all in place yet.
+
     def area_reference_property(self, name: str = "AreaReference") -> PropertySpec:
         """A link to CAD faces whose total area drives this element's Area."""
         return PropertySpec(
@@ -138,7 +209,7 @@ class AcousticVolume(NetworkObject):
             ),
         )
 
-    def execute(self, obj: Any) -> None:
+    def update(self, obj: Any) -> None:
         """Refresh the volume and the cavity's span from the referenced solid."""
         shape_source = getattr(obj, "Shape", None)
         if shape_source is None:
@@ -194,6 +265,7 @@ class Driver(NetworkObject):
     """
 
     Type = "Audio::Driver"
+    NODES = ("FrontNode", "BackNode")
 
     def properties(self) -> Iterable[PropertySpec]:
         return (
@@ -243,7 +315,7 @@ class Driver(NetworkObject):
             medium=medium,
         )
 
-    def execute(self, obj: Any) -> None:
+    def update(self, obj: Any) -> None:
         try:
             obj.Qts = self.parameters(obj).Qts
         except ValueError:
@@ -258,6 +330,7 @@ class Port(NetworkObject):
     """
 
     Type = "Audio::Port"
+    NODES = ("NodeA", "NodeB")
 
     def properties(self) -> Iterable[PropertySpec]:
         return (
@@ -272,7 +345,7 @@ class Port(NetworkObject):
             *self.node_properties("NodeA", "NodeB"),
         )
 
-    def execute(self, obj: Any) -> None:
+    def update(self, obj: Any) -> None:
         self.derive_area(obj)
 
 
@@ -288,6 +361,7 @@ class AcousticResistance(NetworkObject):
     """
 
     Type = "Audio::Resistance"
+    NODES = ("NodeA", "NodeB")
 
     def properties(self) -> Iterable[PropertySpec]:
         return (
@@ -299,7 +373,7 @@ class AcousticResistance(NetworkObject):
             *self.node_properties("NodeA", "NodeB"),
         )
 
-    def execute(self, obj: Any) -> None:
+    def update(self, obj: Any) -> None:
         self.derive_area(obj)
 
 
@@ -313,6 +387,7 @@ class LeakPath(NetworkObject):
     """
 
     Type = "Audio::Leak"
+    NODES = ("NodeA", "NodeB")
 
     def properties(self) -> Iterable[PropertySpec]:
         return (
@@ -330,7 +405,7 @@ class LeakPath(NetworkObject):
             *self.node_properties("NodeA", "NodeB"),
         )
 
-    def execute(self, obj: Any) -> None:
+    def update(self, obj: Any) -> None:
         """Set Width from the referenced edge loop, if one is referenced."""
         references = getattr(obj, "WidthReference", None)
         if not references:
@@ -351,6 +426,7 @@ class Radiation(NetworkObject):
     """
 
     Type = "Audio::Radiation"
+    NODES = ("NodeA",)
 
     def properties(self) -> Iterable[PropertySpec]:
         return (
@@ -360,7 +436,7 @@ class Radiation(NetworkObject):
             *self.node_properties("NodeA",),
         )
 
-    def execute(self, obj: Any) -> None:
+    def update(self, obj: Any) -> None:
         self.derive_area(obj)
 
 
@@ -368,6 +444,7 @@ class PassiveRadiator(NetworkObject):
     """A driverless diaphragm: mass and compliance, no motor."""
 
     Type = "Audio::PassiveRadiator"
+    NODES = ("NodeA", "NodeB")
 
     def properties(self) -> Iterable[PropertySpec]:
         return (
@@ -401,6 +478,75 @@ NETWORK_CLASSES: tuple[type[NetworkObject], ...] = (
 
 #: Objects that act as nodes rather than elements.
 NODE_TYPES = (AcousticNode.Type, AcousticVolume.Type)
+
+
+# ---------------------------------------------------------------------------------
+# Tree shape
+# ---------------------------------------------------------------------------------
+#
+# A lumped network is a graph, not a tree: an element joins two nodes and a node carries
+# many elements, so there is no single correct parent for anything. Flattening it, which
+# is what a plain group does, loses the topology entirely -- the complaint that prompted
+# this. Nesting each element under the *first* node it connects loses nothing that
+# matters and gains a great deal: the tree becomes an adjacency list.
+#
+#   EarCavity
+#     Woofer    -> CupCavity
+#     PadSeal   -> exterior
+#   CupCavity
+#     RearVent  -> BehindMesh
+#
+# The other end of each element is written into its description, so no information is
+# hidden by the choice of parent. Every object is claimed by exactly one owner, which is
+# what keeps it from appearing twice.
+
+
+def owner_of(obj: Any) -> Any | None:
+    """The object that should hold ``obj`` in the tree, or None for the analysis itself."""
+    proxy = getattr(obj, "Proxy", None)
+    primary = getattr(proxy, "primary_node", None)
+    return primary(obj) if callable(primary) else None
+
+
+def tree_children(obj: Any, candidates: Iterable[Any]) -> list[Any]:
+    """Everything among ``candidates`` that belongs under ``obj``.
+
+    A node claims the elements filed under it. A volume also claims the solid it measures
+    itself from, so the extracted cavity sits with the acoustic object that uses it rather
+    than loose in the document.
+    """
+    candidates = list(candidates)
+    children = [
+        other for other in candidates
+        if other.Name != obj.Name and _same(owner_of(other), obj)
+    ]
+    shape = getattr(obj, "Shape", None)
+    shape_name = getattr(shape, "Name", None)
+    if shape_name:
+        children.extend(c for c in candidates if c.Name == shape_name)
+    return children
+
+
+def _same(one: Any, other: Any) -> bool:
+    """Whether two document-object references point at the same object.
+
+    Compared by name rather than by identity. FreeCAD hands out a fresh Python wrapper on
+    each attribute access, so ``is`` and ``id()`` are not dependable here -- two reads of
+    the same link can be two objects as far as Python is concerned, and a tree built on
+    that would drop children intermittently.
+    """
+    if one is None or other is None:
+        return False
+    return getattr(one, "Name", None) == getattr(other, "Name", object())
+
+
+def unclaimed(members: Iterable[Any]) -> list[Any]:
+    """Members of an analysis that no other member claims, for the top level."""
+    members = list(members)
+    claimed = {
+        child.Name for member in members for child in tree_children(member, members)
+    }
+    return [member for member in members if member.Name not in claimed]
 
 
 def _make(doc: Any, proxy_class: type[NetworkObject], name: str, analysis: Any = None) -> Any:

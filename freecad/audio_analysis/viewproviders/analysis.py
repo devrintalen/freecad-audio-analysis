@@ -21,5 +21,13 @@ class ViewProviderAudioAnalysis(ViewProviderAudioObject):
         return True
 
     def claimChildren(self) -> list[Any]:
-        """Nest the analysis's members under it in the tree."""
-        return list(getattr(self.Object, "Group", []))
+        """Only the members nothing else claims.
+
+        Elements are nested under the node they connect to, so listing every member here
+        as well would show each of them twice. What is left at this level is the nodes,
+        the study objects, and any element whose terminals are all on the exterior --
+        which is exactly the set that deserves to be conspicuous.
+        """
+        from freecad.audio_analysis.objects.network_objects import unclaimed
+
+        return unclaimed(getattr(self.Object, "Group", []))

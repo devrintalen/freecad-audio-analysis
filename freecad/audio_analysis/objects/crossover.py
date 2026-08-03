@@ -127,7 +127,12 @@ class CrossoverFilter(NetworkObject):
             impedance=obj.NominalImpedance,
         )
 
-    def execute(self, obj: Any) -> None:
+    def connection_text(self, obj: Any) -> str:
+        """A crossover connects to drivers rather than to nodes, so it says which."""
+        drivers = [d.Label for d in obj.Drivers if d is not None]
+        return f"feeds {', '.join(drivers)}" if drivers else "feeds nothing"
+
+    def update(self, obj: Any) -> None:
         """Refresh the human-readable summary of what this branch is.
 
         For a passive branch this is where the component values appear -- the numbers a
