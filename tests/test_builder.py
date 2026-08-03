@@ -344,3 +344,114 @@ class TestPlotting:
         # The shaded span and the dashed limit line are both added.
         assert len(axis.patches) >= 1
         assert any(line.get_linestyle() == "--" for line in axis.lines)
+
+
+class TestGeometryReferences:
+    """Elements whose numbers exist in the CAD should read them from it.
+
+    Not every acoustic element corresponds to modelled geometry -- a pad seal gap does
+    not exist in CAD at all -- so references are optional everywhere and typing a number
+    stays valid.
+    """
+
+    def test_port_area_from_referenced_faces(self, doc):
+        analysis = make_analysis(doc)
+        box = doc.addObject("Part::Box", "Vented")
+        box.Length, box.Width, box.Height = 20.0, 10.0, 5.0
+        doc.recompute()
+
+        port = no.make_port(doc, analysis, "Vent")
+        port.AreaReference = [(box, ("Face5",))]  # a 20 x 10 mm face
+        doc.recompute()
+        port.Proxy.execute(port)
+        assert port.Area.getValueAs("mm^2").Value == pytest.approx(200.0)
+
+    def test_multiple_faces_sum(self, doc):
+        analysis = make_analysis(doc)
+        box = doc.addObject("Part::Box", "Grille")
+        box.Length, box.Width, box.Height = 20.0, 10.0, 5.0
+        doc.recompute()
+
+        port = no.make_port(doc, analysis, "Vent")
+        port.AreaReference = [(box, ("Face5", "Face6"))]  # both 20 x 10 faces
+        doc.recompute()
+        port.Proxy.execute(port)
+        assert port.Area.getValueAs("mm^2").Value == pytest.approx(400.0)
+
+    def test_resistance_area_from_faces(self, doc):
+        analysis = make_analysis(doc)
+        box = doc.addObject("Part::Box", "MeshPart")
+        box.Length, box.Width, box.Height = 8.0, 8.0, 1.0
+        doc.recompute()
+
+        mesh = no.make_resistance(doc, analysis, "Mesh")
+        mesh.AreaReference = [(box, ("Face5",))]
+        doc.recompute()
+        mesh.Proxy.execute(mesh)
+        assert mesh.Area.getValueAs("mm^2").Value == pytest.approx(64.0)
+
+    def test_leak_width_from_referenced_edges(self, doc):
+        analysis = make_analysis(doc)
+        box = doc.addObject("Part::Box", "PadRing")
+        box.Length, box.Width, box.Height = 30.0, 20.0, 5.0
+        doc.recompute()
+
+        leak = no.make_leak(doc, analysis, "Seal")
+        leak.WidthReference = [(box, ("Edge1", "Edge2"))]
+        doc.recompute()
+        leak.Proxy.execute(leak)
+        # Two edges of a 30 x 20 x 5 box; whatever they are, the sum must be positive
+        # and match the shape's own edge lengths.
+        expected = box.Shape.getElement("Edge1").Length + box.Shape.getElement("Edge2").Length
+        assert leak.Width.getValueAs("mm").Value == pytest.approx(expected)
+
+    def test_no_reference_leaves_the_typed_value_alone(self, doc):
+        analysis = make_analysis(doc)
+        port = no.make_port(doc, analysis, "Manual")
+        port.Area = FreeCAD.Units.Quantity("12 cm^2")
+        doc.recompute()
+        port.Proxy.execute(port)
+        assert port.Area.getValueAs("cm^2").Value == pytest.approx(12.0)
+
+    def test_whole_shape_reference_uses_every_face(self, doc):
+        analysis = make_analysis(doc)
+        box = doc.addObject("Part::Box", "Whole")
+        box.Length = box.Width = box.Height = 10.0
+        doc.recompute()
+
+        port = no.make_port(doc, analysis, "AllFaces")
+        # The whole-shape form is an empty *string*: FreeCAD discards entries whose
+        # sub-element tuple is empty, storing [(obj, ())] as plain [].
+        port.AreaReference = [(box, "")]
+        doc.recompute()
+        port.Proxy.execute(port)
+        assert port.Area.getValueAs("mm^2").Value == pytest.approx(600.0)  # 6 x 100
+
+    def test_stale_reference_warns_and_keeps_the_old_value(self, doc):
+        analysis = make_analysis(doc)
+        box = doc.addObject("Part::Box", "Small")
+        doc.recompute()
+        port = no.make_port(doc, analysis, "Stale")
+        port.Area = FreeCAD.Units.Quantity("5 cm^2")
+        port.AreaReference = [(box, ("Face99",))]
+        doc.recompute()
+        port.Proxy.execute(port)
+        assert port.Area.getValueAs("cm^2").Value == pytest.approx(5.0)
+
+    def test_derived_area_reaches_the_network(self, doc):
+        analysis = make_analysis(doc)
+        make_environment(doc, analysis)
+        cup = no.make_volume(doc, analysis, "Cup")
+        driver = no.make_driver(doc, analysis, "Drv")
+        driver.BackNode = cup
+        box = doc.addObject("Part::Box", "VentHole")
+        box.Length, box.Width, box.Height = 40.0, 20.0, 2.0
+        doc.recompute()
+        port = no.make_port(doc, analysis, "Vent")
+        port.NodeA = cup
+        port.AreaReference = [(box, ("Face5",))]
+        doc.recompute()
+        port.Proxy.execute(port)
+
+        network, _ = build_network(analysis)
+        assert network.element("Vent").area == pytest.approx(800.0e-6)

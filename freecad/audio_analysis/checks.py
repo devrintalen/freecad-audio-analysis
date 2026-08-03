@@ -18,7 +18,7 @@ but annotates the results. ``INFO`` records an assumption worth seeing.
 Checks are registered functions taking an analysis object and yielding diagnostics. They
 are pure and headless-testable; nothing here imports FreeCADGui. Tiers 1 and beyond
 register their own checks against this same framework — see the catalogue in
-STRUCTURE.md §6.7.
+STRUCTURE.md §6.8.
 """
 
 from __future__ import annotations
@@ -255,7 +255,7 @@ def check_analysis_is_not_empty(analysis: Any) -> Iterator[Diagnostic]:
                 "Add a Driver and the volumes it radiates into. Starting from a template "
                 "for your device type will wire the topology correctly."
             ),
-            reference="STRUCTURE.md §6.7",
+            reference="STRUCTURE.md §6.8",
             subject=analysis.Label,
         )
 

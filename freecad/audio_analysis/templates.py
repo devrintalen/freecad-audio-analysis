@@ -1,6 +1,6 @@
 """Ready-made analysis topologies.
 
-The first of the guidance mechanisms in STRUCTURE.md §6.7, and the one that matters most.
+The first of the guidance mechanisms in STRUCTURE.md §6.8, and the one that matters most.
 Choosing which node a driver's back connects to is the most consequential decision in a
 lumped model and the least visible when it is wrong: a mistyped dimension shows up as a
 shifted curve, but a mis-wired topology produces a smooth, confident answer to a different

@@ -194,7 +194,7 @@ class NewFromTemplate(AudioCommand):
 
     Deciding which node a driver's back connects to is the most consequential and least
     visible choice in a lumped model, so the workbench offers correct topologies rather
-    than a blank canvas (STRUCTURE.md §6.7).
+    than a blank canvas (STRUCTURE.md §6.8).
     """
 
     Name = "NewFromTemplate"

@@ -95,6 +95,75 @@ def measure_volume(obj: Any) -> VolumeMeasurement:
     return VolumeMeasurement(label=label, volume_mm3=total_mm3, solid_count=len(solids))
 
 
+class NoSubShapeError(ValueError):
+    """Raised when a geometry reference cannot be resolved to faces or edges."""
+
+
+def _resolve_subshapes(references: Any, kind: str) -> list[Any]:
+    """Resolve an ``App::PropertyLinkSubList`` value to sub-shapes of ``kind``.
+
+    ``references`` is FreeCAD's ``[(object, ("Face1", "Face3")), ...]`` form. An entry
+    naming no sub-elements means the whole shape, so a user can reference a small helper
+    solid instead of picking individual faces.
+    """
+    resolved: list[Any] = []
+    for entry in references or []:
+        try:
+            obj, names = entry
+        except (TypeError, ValueError) as exc:
+            raise NoSubShapeError(f"malformed geometry reference: {entry!r}") from exc
+
+        shape = getattr(obj, "Shape", None)
+        if shape is None or shape.isNull():
+            raise NoSubShapeError(f"{getattr(obj, 'Label', obj)} has no shape")
+
+        if not names:
+            resolved.extend(getattr(shape, kind + "s", []))
+            continue
+
+        for name in [names] if isinstance(names, str) else names:
+            if not name:
+                resolved.extend(getattr(shape, kind + "s", []))
+                continue
+            if not name.startswith(kind):
+                raise NoSubShapeError(
+                    f"{getattr(obj, 'Label', obj)}.{name} is not a {kind.lower()}"
+                )
+            try:
+                resolved.append(shape.getElement(name))
+            except Exception as exc:  # noqa: BLE001 -- stale reference after a rebuild
+                raise NoSubShapeError(
+                    f"{getattr(obj, 'Label', obj)}.{name} could not be resolved; the "
+                    f"geometry may have changed since it was picked"
+                ) from exc
+    return resolved
+
+
+def referenced_area_mm2(references: Any) -> float:
+    """Total area of the referenced faces, in mm^2.
+
+    Used where an acoustic element's area is a real feature of the model -- the open area
+    of a vent, the area a damping mesh covers. Reading it from geometry means it tracks
+    design changes instead of going stale the moment a hole is resized.
+    """
+    faces = _resolve_subshapes(references, "Face")
+    if not faces:
+        raise NoSubShapeError("no faces referenced")
+    return sum(face.Area for face in faces)
+
+
+def referenced_length_mm(references: Any) -> float:
+    """Total length of the referenced edges, in mm.
+
+    The natural way to give a leak its width: pick the edge loop where an earpad meets
+    the head, rather than measuring a perimeter by hand.
+    """
+    edges = _resolve_subshapes(references, "Edge")
+    if not edges:
+        raise NoSubShapeError("no edges referenced")
+    return sum(edge.Length for edge in edges)
+
+
 def global_placement_of(obj: Any) -> Any:
     """The object's placement in global coordinates.
 

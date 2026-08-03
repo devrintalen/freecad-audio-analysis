@@ -255,7 +255,7 @@ Which engine handles which question:
 A key workflow consequence: **the lumped model and the 3D model must share parameters.**
 A `Driver` object holds Thiele–Small parameters; the lumped solver consumes them directly,
 and the 3D solver uses them to drive the diaphragm boundary. Better still, the 3D solver
-can *extract* them (§6.9), closing the loop.
+can *extract* them (§6.10), closing the loop.
 
 ---
 
@@ -696,7 +696,51 @@ Curves are drawn beyond it only when marked — greyed, dashed, or cut off — b
 confident-looking response plotted to 20 kHz from a model valid to 400 Hz is the single
 easiest way for this tool to mislead its user.
 
-### 6.7 Guiding the user to a correct setup
+### 6.7 How network objects relate to CAD geometry
+
+A lumped network is a **topological** model, not a geometric one, so the mapping between
+its objects and the parts in a document is real but partial. Being vague about that is a
+good way to confuse someone who reasonably expects every object in the tree to correspond
+to something they drew.
+
+Four honest categories:
+
+| Category | Objects | Relationship to CAD |
+|---|---|---|
+| **Air volumes** | `AcousticVolume` | Direct. References a solid representing the *air* and measures it. Requires the cavity to exist as a solid, which usually means extracting it (§6.5) |
+| **Geometric features** | `Port`, `AcousticResistance`, `Radiation`, `LeakPath` | Parametric. Their area or width can be read from referenced faces or edges, so they track design changes |
+| **Component specifications** | `Driver`, `PassiveRadiator` | None. Thiele–Small parameters come from a datasheet or a measurement rig; geometry cannot supply them |
+| **Fitting and bookkeeping** | `LeakPath` gap, `AcousticNode` | None at all. A pad-to-head gap is not modelled, and an intermediate node is an artifact of the circuit representation |
+
+Worked through for the open-back template:
+
+| Object | In the CAD | Source of its numbers |
+|---|---|---|
+| `EarCavity` | the air between pad and head — *not* normally modelled | capped cavity solid, or an estimate |
+| `CupCavity` | air inside the cup, minus driver, plate and PCB | cavity extraction (§6.5) |
+| `Driver` | the driver part | datasheet or measurement, **not** geometry |
+| `RearVent` | the actual rear openings | `AreaReference` on the opening faces; length from wall thickness |
+| `VentMesh` | a mesh or fabric part, if modelled | `AreaReference`; rayls from the material spec |
+| `PadSeal` | nothing — a gap that only exists when worn | `WidthReference` on the pad's contact loop; gap is a fitting parameter |
+| `BehindMesh` | **nothing** | pure bookkeeping, so the vent and mesh are in series |
+
+Two consequences worth designing around.
+
+**Geometry references, not typed numbers, wherever the number exists in the model.**
+`AcousticVolume` takes a solid; `Port`, `AcousticResistance` and `Radiation` take faces;
+`LeakPath` takes an edge loop for its width. Every reference is optional, because plenty
+of acoustically important quantities have no geometric counterpart. But where one does
+exist, reading it means the model tracks the design instead of going stale the moment a
+vent is resized.
+
+**`AcousticNode` is the abstraction leaking, and should be minimised.** An intermediate
+node exists only because two elements need to be in series; it corresponds to nothing.
+Templates currently create one (`BehindMesh`) to put a mesh behind a vent. A better long
+term answer is to let `Port` carry an optional built-in mesh resistance, so the common
+case needs no bookkeeping node at all, and `AcousticNode` is reserved for genuine
+three-way junctions.
+
+### 6.8 Guiding the user to a correct setup
 
 Acoustic simulation fails quietly. A driver whose back port connects to nothing, or a
 sweep run an octave past lumped validity, does not crash — it returns a smooth, confident,
@@ -773,7 +817,7 @@ crossover region where the tweeter contributes. Those need Tier 2/3 for the inte
 Tier 4 BEM for isolation. The check in mechanism 4 makes that boundary explicit on the
 plot rather than leaving the user to infer it.
 
-### 6.8 Outputs — what the user actually sees
+### 6.9 Outputs — what the user actually sees
 
 The outputs *are* the product. Everything else is machinery for producing them.
 
@@ -851,7 +895,7 @@ a crossover simulator), **SOFA** for directivity and HRTF data, VTU for fields, 
 plots, and a single-file HTML or PDF report bundling curves, summary card, provenance and
 the preflight diagnostics.
 
-### 6.9 Round-tripping between lumped and 3D
+### 6.10 Round-tripping between lumped and 3D
 
 The feature that makes the two-tier approach worth the effort:
 

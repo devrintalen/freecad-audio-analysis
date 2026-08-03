@@ -38,6 +38,30 @@ def quantity(value: float, unit: str) -> FreeCAD.Units.Quantity:
 class NetworkObject(AudioObject):
     """Base for every object that becomes a node or an element."""
 
+    def area_reference_property(self, name: str = "AreaReference") -> PropertySpec:
+        """A link to CAD faces whose total area drives this element's Area."""
+        return PropertySpec(
+            "App::PropertyLinkSubList", name, GROUP_GEOMETRY,
+            "Optional CAD faces whose total area sets Area. Pick the actual opening in "
+            "the model and it tracks design changes.",
+        )
+
+    def derive_area(self, obj: Any, reference: str = "AreaReference", target: str = "Area") -> None:
+        """Set ``target`` from the referenced faces, if any are referenced.
+
+        Silent when nothing is referenced -- typing a number stays perfectly valid, since
+        not every acoustic element corresponds to modelled geometry.
+        """
+        references = getattr(obj, reference, None)
+        if not references:
+            return
+        from freecad.audio_analysis.geometry import NoSubShapeError, referenced_area_mm2
+
+        try:
+            setattr(obj, target, quantity(referenced_area_mm2(references), "mm^2"))
+        except NoSubShapeError as exc:
+            FreeCAD.Console.PrintWarning(f"Audio Analysis: {obj.Label}: {exc}\n")
+
     def node_properties(self, *names: str) -> tuple[PropertySpec, ...]:
         """Link properties for the nodes this element connects."""
         return tuple(
@@ -213,8 +237,12 @@ class Port(NetworkObject):
             PropertySpec("App::PropertyInteger", "FlangedEnds", GROUP_GEOMETRY,
                          "Number of flush-mounted ends (0, 1 or 2), for the end "
                          "correction", default=2),
+            self.area_reference_property(),
             *self.node_properties("NodeA", "NodeB"),
         )
+
+    def execute(self, obj: Any) -> None:
+        self.derive_area(obj)
 
 
 class AcousticResistance(NetworkObject):
@@ -236,8 +264,12 @@ class AcousticResistance(NetworkObject):
                          "Flow resistance of the material, rayls (Pa*s/m)", default=20.0),
             PropertySpec("App::PropertyArea", "Area", GROUP_GEOMETRY,
                          "Area the material covers", default=quantity(2.0, "cm^2")),
+            self.area_reference_property(),
             *self.node_properties("NodeA", "NodeB"),
         )
+
+    def execute(self, obj: Any) -> None:
+        self.derive_area(obj)
 
 
 class LeakPath(NetworkObject):
@@ -261,8 +293,23 @@ class LeakPath(NetworkObject):
             PropertySpec("App::PropertyLength", "Length", GROUP_GEOMETRY,
                          "Depth of the leak path along the flow direction",
                          default=quantity(4.0, "mm")),
+            PropertySpec("App::PropertyLinkSubList", "WidthReference", GROUP_GEOMETRY,
+                         "Optional CAD edges whose total length sets Width -- pick the "
+                         "loop where the earpad meets the head."),
             *self.node_properties("NodeA", "NodeB"),
         )
+
+    def execute(self, obj: Any) -> None:
+        """Set Width from the referenced edge loop, if one is referenced."""
+        references = getattr(obj, "WidthReference", None)
+        if not references:
+            return
+        from freecad.audio_analysis.geometry import NoSubShapeError, referenced_length_mm
+
+        try:
+            obj.Width = quantity(referenced_length_mm(references), "mm")
+        except NoSubShapeError as exc:
+            FreeCAD.Console.PrintWarning(f"Audio Analysis: {obj.Label}: {exc}\n")
 
 
 class Radiation(NetworkObject):
@@ -278,8 +325,12 @@ class Radiation(NetworkObject):
         return (
             PropertySpec("App::PropertyArea", "Area", GROUP_GEOMETRY,
                          "Radiating area", default=quantity(26.4, "cm^2")),
+            self.area_reference_property(),
             *self.node_properties("NodeA",),
         )
+
+    def execute(self, obj: Any) -> None:
+        self.derive_area(obj)
 
 
 class PassiveRadiator(NetworkObject):
