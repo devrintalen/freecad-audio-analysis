@@ -20,8 +20,8 @@ from typing import Any, Callable
 
 import FreeCAD
 
+from freecad.audio_analysis.objects import crossover, study
 from freecad.audio_analysis.objects import network_objects as no
-from freecad.audio_analysis.objects import study
 
 
 def q(value: float, unit: str) -> FreeCAD.Units.Quantity:
@@ -85,6 +85,71 @@ def _build_over_ear(doc, analysis, *, vented: bool) -> list[Any]:
         created += [behind, vent, mesh]
 
     return created + _sweep_and_solver(doc, analysis, 105.0, 2000.0)
+
+
+def _build_over_ear_two_way(doc, analysis) -> list[Any]:
+    """Two drivers sharing one ear cavity, split by a crossover.
+
+    The case that justifies solving the whole network at once. Both diaphragms face the
+    same air, so each one's motion changes the pressure the other works against; running
+    two single-driver models and adding the curves gives a different -- wrong -- answer,
+    and the discrepancy is largest exactly in the crossover region where both are moving
+    (STRUCTURE.md §2.4).
+
+    The woofer's back is loaded by the cup, which vents. The tweeter gets its own small
+    sealed chamber, which is what a real two-way over-ear usually does: a tweeter sharing
+    the cup would be modulated by the woofer's back pressure.
+    """
+    ear = no.make_volume(doc, analysis, "EarCavity")
+    ear.Volume = q(100.0, "cm^3")
+    ear.Description = "Air between the earpad and the ear -- its pressure is the result"
+
+    cup = no.make_volume(doc, analysis, "CupCavity")
+    cup.Volume = q(200.0, "cm^3")
+    cup.Description = "Air behind the woofer, inside the cup"
+
+    chamber = no.make_volume(doc, analysis, "TweeterChamber")
+    chamber.Volume = q(3.0, "cm^3")
+    chamber.Description = "Sealed volume behind the tweeter, isolating it from the cup"
+
+    woofer = no.make_driver(doc, analysis, "Woofer")
+    woofer.FrontNode, woofer.BackNode = ear, cup
+    woofer.Fs, woofer.Sd = q(45.0, "Hz"), q(26.4, "cm^2")
+    woofer.Vas, woofer.Xmax = q(2.5, "l"), q(0.8, "mm")
+
+    tweeter = no.make_driver(doc, analysis, "Tweeter")
+    tweeter.FrontNode, tweeter.BackNode = ear, chamber
+    tweeter.Fs, tweeter.Sd = q(1200.0, "Hz"), q(3.0, "cm^2")
+    tweeter.Vas, tweeter.Xmax = q(0.02, "l"), q(0.2, "mm")
+    tweeter.Qms, tweeter.Qes = 2.0, 0.8
+
+    # Fourth-order Linkwitz-Riley: the branches are a full turn of phase apart at the
+    # crossover, so they sum flat with both drivers wired the same way round. At second
+    # order they would be half a turn apart and cancel instead.
+    low = crossover.make_crossover(doc, analysis, "LowPass")
+    low.Drivers, low.Response, low.Order = [woofer], "Lowpass", 4
+    low.Frequency, low.NominalImpedance = q(2500.0, "Hz"), woofer.Re
+
+    high = crossover.make_crossover(doc, analysis, "HighPass")
+    high.Drivers, high.Response, high.Order = [tweeter], "Highpass", 4
+    high.Frequency, high.NominalImpedance = q(2500.0, "Hz"), tweeter.Re
+    # Tweeters are almost always the more sensitive of a pair, so start it padded down.
+    high.Gain = -4.0
+
+    seal = no.make_leak(doc, analysis, "PadSeal")
+    seal.NodeA = ear
+
+    behind = no.make_node(doc, analysis, "BehindMesh")
+    behind.Description = "Between the rear vent and its damping mesh"
+    vent = no.make_port(doc, analysis, "RearVent")
+    vent.NodeA, vent.NodeB = cup, behind
+    vent.Area = q(8.0, "cm^2")
+    mesh = no.make_resistance(doc, analysis, "VentMesh")
+    mesh.NodeA = behind
+    mesh.Area, mesh.SpecificResistance = q(8.0, "cm^2"), 20.0
+
+    created = [ear, cup, chamber, woofer, tweeter, low, high, seal, behind, vent, mesh]
+    return created + _sweep_and_solver(doc, analysis, 105.0, 20000.0)
 
 
 def _build_in_ear(doc, analysis) -> list[Any]:
@@ -171,6 +236,22 @@ TEMPLATES: tuple[Template, ...] = (
             "open-back template to see what sealing the cup costs and gains."
         ),
         build=lambda doc, analysis: _build_over_ear(doc, analysis, vented=False),
+    ),
+    Template(
+        key="over_ear_two_way",
+        name="Over-ear headphone, two-way",
+        summary=(
+            "A woofer and a tweeter facing one shared ear cavity, split by a Linkwitz-"
+            "Riley crossover. The woofer's back vents through the cup; the tweeter has "
+            "its own sealed chamber."
+        ),
+        next_steps=(
+            "Set both drivers' parameters and the cavity volumes, then tune the crossover "
+            "frequency and the tweeter's Gain. Note the validity warning: a 2.5 kHz "
+            "crossover is far above where a lumped model of a 105 mm cup can be trusted, "
+            "so use this to compare candidates rather than to predict the summed curve."
+        ),
+        build=lambda doc, analysis: _build_over_ear_two_way(doc, analysis),
     ),
     Template(
         key="in_ear",

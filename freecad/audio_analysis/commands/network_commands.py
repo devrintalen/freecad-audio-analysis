@@ -7,9 +7,9 @@ from typing import Any, Callable
 import FreeCAD
 
 from freecad.audio_analysis.commands.base import AudioCommand, register, transaction
-from freecad.audio_analysis.objects import find_active_analysis
+from freecad.audio_analysis.objects import crossover, find_active_analysis, study
 from freecad.audio_analysis.objects import network_objects as no
-from freecad.audio_analysis.objects import study
+from freecad.audio_analysis.objects.base import is_audio_object
 
 
 class _AddToAnalysis(AudioCommand):
@@ -96,6 +96,41 @@ class AddRadiation(_AddToAnalysis):
     MenuText = "Add radiation"
     ToolTip = "Terminate a node into free space with a piston radiation impedance."
     factory = staticmethod(no.make_radiation)
+
+
+class AddCrossover(_AddToAnalysis):
+    Name, object_name, IconName = "AddCrossover", "Crossover", "Crossover"
+    MenuText = "Add crossover"
+    ToolTip = (
+        "Add a filter branch and name the drivers it feeds. Without one, every driver "
+        "gets the same voltage at every frequency, which is not a system."
+    )
+    factory = staticmethod(crossover.make_crossover)
+
+    def run(self) -> None:
+        """Create the branch, pre-attaching whatever driver is selected."""
+        try:
+            import FreeCADGui
+
+            selected = [
+                o for o in FreeCADGui.Selection.getSelection()
+                if is_audio_object(o, no.Driver.Type)
+            ]
+        except (ImportError, AttributeError):  # headless: nothing is selected
+            selected = []
+        super().run()
+        if not selected:
+            return
+        doc = FreeCAD.ActiveDocument
+        branch = doc.Objects[-1]
+        branch.Drivers = selected
+        # Nominal impedance only means anything against a real driver, so seed it.
+        branch.NominalImpedance = selected[0].Re
+        branch.Proxy.execute(branch)
+        FreeCAD.Console.PrintMessage(
+            f"Audio Analysis: {branch.Label} feeds "
+            f"{', '.join(d.Label for d in selected)}.\n"
+        )
 
 
 class AddFrequencySweep(_AddToAnalysis):
@@ -365,7 +400,9 @@ class NewFromTemplate(AudioCommand):
 
 
 GEOMETRY_COMMANDS = (ExtractCavity, VolumeFromCavity)
-MODEL_COMMANDS = (AddVolume, AddNode, AddDriver, AddPort, AddResistance, AddLeak, AddRadiation)
+MODEL_COMMANDS = (
+    AddVolume, AddNode, AddDriver, AddCrossover, AddPort, AddResistance, AddLeak, AddRadiation,
+)
 SOLVE_COMMANDS = (AddFrequencySweep, AddLumpedSolver, RunLumpedSolver, PlotResults)
 TEMPLATE_COMMANDS = (NewFromTemplate,)
 

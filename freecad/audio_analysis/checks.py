@@ -344,6 +344,244 @@ def check_driver_connections(analysis: Any) -> Iterator[Diagnostic]:
 
 
 @check
+def check_crossover_assignments(analysis: Any) -> Iterator[Diagnostic]:
+    """Every crossover branch must feed drivers, and no driver may be fed by two."""
+    from freecad.audio_analysis.objects.crossover import CrossoverFilter
+
+    branches = _find(analysis, CrossoverFilter.Type)
+    owners: dict[str, list[str]] = {}
+    for branch in branches:
+        drivers = [d for d in branch.Drivers if d is not None]
+        if not drivers:
+            yield Diagnostic(
+                severity=Severity.WARNING,
+                code="crossover-unattached",
+                message="This crossover feeds no drivers, so it does nothing.",
+                why=(
+                    "A filter only exists in the model through the drivers it is wired to. "
+                    "An unattached one is silently ignored, which looks identical to a "
+                    "crossover that is not working."
+                ),
+                remedy="Add the driver it feeds to the Drivers list.",
+                subject=branch.Label,
+                reference="STRUCTURE.md §6.6",
+            )
+        for driver in drivers:
+            owners.setdefault(driver.Name, []).append(branch.Label)
+
+    for name, labels in owners.items():
+        if len(labels) > 1:
+            yield Diagnostic(
+                severity=Severity.ERROR,
+                code="crossover-conflict",
+                message=f"This driver is fed by {len(labels)} crossovers: {', '.join(labels)}.",
+                why=(
+                    "A driver has one pair of terminals, so only one branch can drive it. "
+                    "Which one applied would depend on object order, which is not a "
+                    "property anyone should be relying on."
+                ),
+                remedy=(
+                    "Remove it from all but one. To cascade two filter shapes, raise the "
+                    "order of a single branch instead."
+                ),
+                subject=name,
+            )
+
+
+@check
+def check_crossover_realisation(analysis: Any) -> Iterator[Diagnostic]:
+    """Catch filters that cannot be built, and passive ones asked for the impossible."""
+    from freecad.audio_analysis.objects.crossover import CrossoverFilter
+    from freecad.audio_analysis.physics.crossover import CrossoverError
+
+    for branch in _find(analysis, CrossoverFilter.Type):
+        try:
+            branch.Proxy.filter(branch)
+        except CrossoverError as exc:
+            yield Diagnostic(
+                severity=Severity.ERROR,
+                code="crossover-unrealisable",
+                message=str(exc),
+                why="This combination of alignment and order does not describe a filter.",
+                remedy="Change the alignment or the order.",
+                subject=branch.Label,
+            )
+            continue
+
+        if not CrossoverFilter.is_passive(branch):
+            continue
+
+        if branch.Gain > 0.0:
+            yield Diagnostic(
+                severity=Severity.WARNING,
+                code="passive-cannot-amplify",
+                message=f"A passive branch cannot apply {branch.Gain:+.1f} dB of gain.",
+                why=(
+                    "Inductors, capacitors and resistors only ever remove energy. The gain "
+                    "is being ignored, so this branch will come out louder in the model "
+                    "than a built one would be."
+                ),
+                remedy=(
+                    "Pad the *other* driver down by the same amount instead, or switch this "
+                    "branch to Active."
+                ),
+                subject=branch.Label,
+            )
+
+        if branch.Delay.getValueAs("s").Value:
+            yield Diagnostic(
+                severity=Severity.WARNING,
+                code="passive-cannot-delay",
+                message="A passive branch cannot apply a delay.",
+                why=(
+                    "Pure delay has no passive realisation, so the value is ignored. In a "
+                    "real build the same alignment is achieved by physically offsetting the "
+                    "driver, which is a geometry change rather than a circuit one."
+                ),
+                remedy="Switch to Active, or move the driver in the CAD model.",
+                subject=branch.Label,
+            )
+
+        for driver in (d for d in branch.Drivers if d is not None):
+            if not 0.5 <= branch.NominalImpedance / max(driver.Re, 1e-9) <= 2.0:
+                yield Diagnostic(
+                    severity=Severity.WARNING,
+                    code="crossover-impedance-mismatch",
+                    message=(
+                        f"Component values assume {branch.NominalImpedance:.0f} ohm but "
+                        f"{driver.Label} has Re = {driver.Re:.0f} ohm."
+                    ),
+                    why=(
+                        "Passive component values are computed against a nominal load. Get "
+                        "it badly wrong and the corner frequency and slope both move, "
+                        "usually by more than any amount of fine tuning will recover."
+                    ),
+                    remedy=f"Set NominalImpedance near {driver.Re:.0f} ohm.",
+                    subject=branch.Label,
+                )
+
+
+@check
+def check_crossover_polarity(analysis: Any) -> Iterator[Diagnostic]:
+    """A complementary Linkwitz-Riley pair may need one driver wired backwards.
+
+    The single least intuitive fact about crossovers, and invisible in a parts list: an
+    Nth-order filter rotates phase by N quarter-turns, so at the crossover frequency the
+    two branches are N*90 degrees apart. At LR4 that is a full turn and the drivers sum in
+    phase. At LR2 it is half a turn and they cancel -- a deep notch exactly where both
+    drivers are working hardest, which sounds like a missing midrange rather than like a
+    wiring error.
+    """
+    from freecad.audio_analysis.objects.crossover import CrossoverFilter
+
+    branches = [
+        b for b in _find(analysis, CrossoverFilter.Type)
+        if str(b.Response) in ("Lowpass", "Highpass")
+    ]
+    lows = [b for b in branches if str(b.Response) == "Lowpass"]
+    highs = [b for b in branches if str(b.Response) == "Highpass"]
+    if len(lows) != 1 or len(highs) != 1:
+        return  # Not a simple two-way; the phase bookkeeping is the user's to do.
+
+    low, high = lows[0], highs[0]
+    if str(low.Alignment) != str(high.Alignment) or low.Order != high.Order:
+        return
+    if str(low.Alignment) != "Linkwitz-Riley":
+        return
+    if abs(low.Frequency.getValueAs("Hz").Value - high.Frequency.getValueAs("Hz").Value) > 1.0:
+        return
+
+    # Order n rotates the pair by n quarter-turns; a half-turn needs one branch reversed.
+    inversion_needed = (low.Order // 2) % 2 == 1
+    drivers = [d for d in list(low.Drivers) + list(high.Drivers) if d is not None]
+    if not drivers:
+        return
+    inverted = sum(1 for d in drivers if d.Inverted)
+    branch_inverted = inverted % 2 == 1
+
+    if branch_inverted == inversion_needed:
+        return
+
+    if inversion_needed:
+        message = f"An LR{low.Order} pair needs one driver inverted, and none is."
+        remedy = f"Tick Inverted on one of {', '.join(d.Label for d in drivers)}."
+        why = (
+            "At the crossover frequency the two branches are 180 degrees apart, so they "
+            "cancel instead of summing. Expect a deep notch right where both drivers are "
+            "contributing most."
+        )
+    else:
+        message = f"An LR{low.Order} pair sums in phase, but a driver is inverted."
+        remedy = "Untick Inverted, or check that the inversion is deliberate."
+        why = (
+            "At this order the branches already arrive in phase, so reversing one turns "
+            "a flat sum into a cancellation."
+        )
+
+    yield Diagnostic(
+        severity=Severity.WARNING,
+        code="crossover-polarity",
+        message=message,
+        why=why,
+        remedy=remedy,
+        reference="STRUCTURE.md §2.4",
+        subject=f"{low.Label} / {high.Label}",
+    )
+
+
+@check
+def check_crossover_within_validity(analysis: Any) -> Iterator[Diagnostic]:
+    """A crossover placed above the lumped limit cannot be designed with a lumped model.
+
+    Worth saying plainly. Crossover frequencies live in the low kilohertz; a lumped model
+    of an over-ear cup runs out at a few hundred hertz. Everything the solver reports about
+    the crossover region can then be smooth, plausible and untrustworthy.
+    """
+    from freecad.audio_analysis.objects.crossover import CrossoverFilter
+    from freecad.audio_analysis.objects.study import LumpedSolver
+
+    branches = [
+        b for b in _find(analysis, CrossoverFilter.Type)
+        if str(b.Response) in ("Lowpass", "Highpass")
+    ]
+    solvers = _find(analysis, LumpedSolver.Type)
+    if not branches or not solvers:
+        return
+
+    dimension = solvers[0].LargestDimension.getValueAs("m").Value
+    if dimension <= 0.0:
+        return  # check_sweep_against_validity already asks for this.
+
+    from freecad.audio_analysis.builder import medium_of
+
+    limit = medium_of(analysis).lumped_validity_limit(dimension)
+    highest = max(b.Frequency.getValueAs("Hz").Value for b in branches)
+    if highest <= limit:
+        return
+
+    yield Diagnostic(
+        severity=Severity.WARNING,
+        code="crossover-beyond-validity",
+        message=(
+            f"The crossover is at {highest:.0f} Hz but this model is only lumped-valid to "
+            f"about {limit:.0f} Hz."
+        ),
+        why=(
+            "The crossover region is where the two drivers interact most and where the "
+            "summed response is most sensitive to phase -- and it sits entirely in the "
+            "range where a lumped model no longer represents the cavity. The curve there "
+            "is not evidence about this design."
+        ),
+        remedy=(
+            "Use Tier 1 to set levels and low-frequency behaviour, and a 3D solve for the "
+            "crossover region itself. Comparing two candidate crossovers against each "
+            "other stays useful; treating the absolute curve as a prediction does not."
+        ),
+        reference="STRUCTURE.md §2.4",
+    )
+
+
+@check
 def check_sweep_against_validity(analysis: Any) -> Iterator[Diagnostic]:
     """Warn when a sweep runs past the frequency where lumped modelling holds."""
     from freecad.audio_analysis.objects.study import FrequencySweep, LumpedSolver

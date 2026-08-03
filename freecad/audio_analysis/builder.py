@@ -75,6 +75,24 @@ def sweep_frequencies(analysis: Any) -> np.ndarray:
     return sweeps[0].Proxy.frequencies(sweeps[0])
 
 
+def filter_for(analysis: Any, driver: Any):
+    """The crossover branch feeding ``driver``, as a physics filter, or None.
+
+    A driver with no crossover is driven straight from the amplifier, which is the right
+    default for a single-driver design and keeps every existing model unchanged.
+    """
+    from freecad.audio_analysis.objects.crossover import crossover_for
+    from freecad.audio_analysis.physics.crossover import CrossoverError
+
+    branch = crossover_for(analysis, driver)
+    if branch is None:
+        return None
+    try:
+        return branch.Proxy.filter(branch)
+    except CrossoverError as exc:
+        raise BuildError(f"{branch.Label}: {exc}") from exc
+
+
 def _length(obj: Any, name: str) -> float:
     return getattr(obj, name).getValueAs("m").Value
 
@@ -125,6 +143,7 @@ def build_network(analysis: Any) -> tuple[net_physics.Network, air.AirProperties
                 voltage=driver.Voltage.getValueAs("V").Value,
                 polarity=-1 if driver.Inverted else 1,
                 source_impedance=driver.SourceImpedance,
+                filter=filter_for(analysis, driver),
             )
         )
 

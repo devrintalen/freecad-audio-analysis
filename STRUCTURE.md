@@ -359,7 +359,7 @@ AudioAnalysis                       ← container, one per study
 │   ├── Port                        ← mass + loss between two nodes
 │   ├── PassiveRadiator             ← between two nodes
 │   ├── AcousticResistance          ← damping mesh/screen between two nodes
-│   └── CrossoverNetwork            ← R/L/C ladder, electrical only
+│   └── CrossoverFilter             ← electrical filter branch feeding named drivers
 ├── Fixtures                        ← see §6.4 for where the geometry comes from
 │   ├── EarSimulator                ← IEC 60318-1 / -4 / -5, impedance or geometry mode
 │   ├── EarCanalModel               ← generated from ITU-T P.57 Type 4.3/4.4, or imported
@@ -665,7 +665,7 @@ point. Three kinds matter:
 | `AcousticResistance` | two nodes | damping mesh or screen |
 | `PassiveRadiator` | two nodes | mass, compliance, loss |
 | `RadiationBoundary` | one node to exterior | radiation impedance |
-| `CrossoverNetwork` | electrical only | filter topology |
+| `CrossoverFilter` | electrical only, feeding named drivers | drive voltage and source impedance versus frequency |
 
 The key structural point: **a driver has two acoustic ports.** Its front radiates into one
 node and its back into another. That single fact is what lets the same model express a
@@ -690,6 +690,42 @@ ngspice remains valuable for **crossover networks specifically** (where everythi
 is R/L/C, and users may want to import existing netlists) and as an independent
 cross-check of the native solver on cases both can express. It stays in the portfolio; it
 is no longer the primary lumped engine.
+
+**Crossovers.** A `CrossoverFilter` is one branch: it names the drivers it feeds and
+supplies them with a drive voltage and a source impedance that both vary with frequency.
+Nothing about the acoustic solve changes — `Driver` already had those two parameters, and
+a filter simply turns them from numbers into curves. A driver with no crossover is driven
+directly, so single-driver models are unaffected.
+
+Two realisations, and the difference is not cosmetic:
+
+* **Active** — a line-level filter with its own power amplifier per driver. The transfer
+  function is exact, delay is available, and the driver stays damped by its amplifier.
+* **Passive** — an L/C ladder in the signal path, synthesised from the requested alignment
+  by continued-fraction expansion of the prototype rather than from a table. Its component
+  values are computed against a *nominal* resistance, but the response reported is the one
+  it produces into the driver's real impedance, which is not resistive. That difference is
+  the reason to simulate a passive crossover at all: the ladder also sits between the
+  amplifier and the coil, weakening the electrical damping term, and its own LC resonance
+  is barely loaded near the driver's impedance peak. A textbook second-order low-pass into
+  a real driver can peak more than 10 dB above what its transfer function alone predicts —
+  which is why real passive crossovers need impedance compensation.
+
+**One amplifier, several branches.** Each branch carries an independent filter. That is
+exact as long as the amplifier's output impedance is zero, since it then holds the common
+node at a fixed voltage regardless of what the other branch draws — true to a fraction of
+a decibel for any normal damping factor. Set a non-zero source impedance and the branches
+genuinely do load each other; that coupling is *not* modelled, and the checks say so.
+`Solution.system_impedance()` reports the branches in parallel, which is the curve the
+finished product presents at its plug.
+
+**Polarity is checked, because it is invisible.** An Nth-order filter rotates phase by N
+quarter-turns, so at the crossover frequency the two branches are N×90° apart. At LR4 that
+is a full turn and the drivers sum flat; at LR2 it is half a turn and they cancel into a
+deep notch exactly where both are working hardest. Nothing in a parts list shows this, and
+it sounds like a missing midrange rather than like a wiring error — so the Tier 1 checks
+compare the pair's order against the drivers' `Inverted` flags and say which way round they
+belong.
 
 **Reporting obligations.** Every lumped result carries the validity limit from §2.4.
 Curves are drawn beyond it only when marked — greyed, dashed, or cut off — because a

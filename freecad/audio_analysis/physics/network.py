@@ -33,6 +33,7 @@ import numpy as np
 from scipy import special
 
 from freecad.audio_analysis.physics import air
+from freecad.audio_analysis.physics.crossover import Filter
 from freecad.audio_analysis.physics.driver import DriverParameters
 from freecad.audio_analysis.results.curve import ResponseCurve
 
@@ -270,6 +271,11 @@ class Driver(Element):
     ``front_node`` is where the diaphragm radiates; ``back_node`` is what loads its rear.
     Having both as explicit nodes is what lets one formulation express a sealed box, a
     vented box, an open back, or two drivers sharing a chamber.
+
+    An optional ``filter`` is the crossover branch feeding this driver. It changes both
+    the voltage arriving at the coil and the impedance looking back at the amplifier, so
+    ``voltage`` and ``source_impedance`` become curves rather than numbers — see
+    :mod:`freecad.audio_analysis.physics.crossover`. Nothing else in the solve changes.
     """
 
     def __init__(
@@ -282,6 +288,7 @@ class Driver(Element):
         voltage: float = 2.83,
         polarity: int = 1,
         source_impedance: float = 0.0,
+        filter: "Filter | None" = None,
     ) -> None:
         super().__init__(name, front_node, back_node)
         if polarity not in (1, -1):
@@ -292,6 +299,7 @@ class Driver(Element):
         self.voltage = voltage
         self.polarity = polarity
         self.source_impedance = source_impedance
+        self.filter = filter
 
     @property
     def front_node(self) -> str:
@@ -301,10 +309,23 @@ class Driver(Element):
     def back_node(self) -> str:
         return self.node_b
 
+    def drive(self, omega: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """``(terminal voltage, impedance looking back)`` at the voice coil.
+
+        The Thévenin equivalent of the amplifier and any crossover ahead of it. Both are
+        independent of the driver, so this is computable before the acoustic solve — which
+        is what keeps a crossover from making the problem circular.
+        """
+        if self.filter is None:
+            ones = np.ones(np.shape(omega), dtype=complex)
+            return self.voltage * ones, self.source_impedance * ones
+        gain, back = self.filter.thevenin(omega, self.source_impedance)
+        return self.voltage * gain, back
+
     def electrical_impedance(self, omega: np.ndarray) -> np.ndarray:
-        """Voice coil impedance plus any amplifier output impedance."""
+        """Voice coil impedance plus whatever the coil sees looking back."""
         p = self.parameters
-        return p.Re + 1j * omega * p.Le + self.source_impedance
+        return p.Re + 1j * omega * p.Le + self.drive(omega)[1]
 
     def impedance(self, omega: np.ndarray, medium: air.AirProperties) -> np.ndarray:
         p = self.parameters
@@ -315,7 +336,8 @@ class Driver(Element):
     def open_circuit_pressure(self, omega: np.ndarray) -> np.ndarray:
         """The Thévenin pressure the motor develops, before acoustic loading."""
         p = self.parameters
-        return self.polarity * p.BL * self.voltage / (self.electrical_impedance(omega) * p.Sd)
+        terminal = self.drive(omega)[0]
+        return self.polarity * p.BL * terminal / (self.electrical_impedance(omega) * p.Sd)
 
     def source(self, omega: np.ndarray, medium: air.AirProperties) -> np.ndarray:
         return self.open_circuit_pressure(omega) / self.impedance(omega, medium)
@@ -473,25 +495,64 @@ class Solution:
                       "space": "half" if half_space else "full"},
         )
 
-    def input_impedance(self, driver_name: str) -> ResponseCurve:
-        """Electrical impedance the amplifier sees at this driver's terminals, ohms.
-
-        Rises to a peak at system resonance because the moving cone generates back-EMF.
-        Measuring this curve is how the resonance of a real assembled system is found.
-        """
+    def _branch_impedance(self, driver_name: str) -> np.ndarray:
+        """Load impedance of one driver branch as the amplifier sees it, ohms."""
         driver = self.network.element(driver_name)
         if not isinstance(driver, Driver):
             raise TypeError(f"{driver_name} is not a Driver")
         p = driver.parameters
-        ze = driver.electrical_impedance(self.omega)
+        omega = self.omega
+        terminal, looking_back = driver.drive(omega)
+        coil = p.Re + 1j * omega * p.Le
         velocity = self.volume_velocity(driver_name).values / p.Sd
         # Polarity flips both BL and the resulting velocity, so their product -- and hence
         # the impedance -- is unchanged. Reversing a driver's wiring must not alter the
         # load the amplifier sees.
-        current = (driver.voltage - driver.polarity * p.BL * velocity) / ze
+        back_emf = driver.polarity * p.BL * velocity
+        current = (terminal - back_emf) / (coil + looking_back)
+        # At the coil terminals the driver looks like its own blocked impedance plus the
+        # motional impedance the back-EMF represents.
+        coil_impedance = coil + back_emf / current
+        if driver.filter is None:
+            return coil_impedance
+        return driver.filter.input_impedance(coil_impedance, omega)
+
+    def input_impedance(self, driver_name: str) -> ResponseCurve:
+        """Electrical impedance the amplifier sees looking into this branch, ohms.
+
+        Rises to a peak at system resonance because the moving cone generates back-EMF.
+        Measuring this curve is how the resonance of a real assembled system is found.
+
+        With a crossover present this is measured at the *filter's* input, not the voice
+        coil's -- that is what a meter across the terminals of a finished product reads,
+        and it is what an amplifier has to drive. The amplifier's own output impedance is
+        excluded, since it is not part of the load.
+        """
         return ResponseCurve(
-            self.frequency, driver.voltage / current, quantity="impedance", unit="ohm",
-            label=f"{driver_name} impedance", valid_below=self.valid_below,
+            self.frequency, self._branch_impedance(driver_name), quantity="impedance",
+            unit="ohm", label=f"{driver_name} impedance", valid_below=self.valid_below,
+            metadata=self._metadata(),
+        )
+
+    def system_impedance(self, driver_names: Sequence[str] | None = None) -> ResponseCurve:
+        """Impedance of several branches wired in parallel across one amplifier, ohms.
+
+        The curve a two-way presents at its plug. Worth looking at: a passive crossover can
+        dip well below the nominal impedance of either driver where the two branches
+        conduct at once, and that dip is what an amplifier actually has to survive.
+
+        Assumes the branches share one amplifier of negligible output impedance, which is
+        the same assumption that lets each branch carry an independent filter.
+        """
+        names = list(driver_names) if driver_names else [d.name for d in self.network.drivers]
+        if not names:
+            raise ValueError("no drivers to combine")
+        admittance = np.zeros_like(self.frequency, dtype=complex)
+        for name in names:
+            admittance = admittance + 1.0 / self._branch_impedance(name)
+        return ResponseCurve(
+            self.frequency, 1.0 / admittance, quantity="impedance", unit="ohm",
+            label=f"system impedance ({', '.join(names)})", valid_below=self.valid_below,
             metadata=self._metadata(),
         )
 

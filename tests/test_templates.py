@@ -50,12 +50,15 @@ class TestEveryTemplate:
     def test_produces_no_unexpected_warnings(self, doc, key):
         """A template that warns about its own wiring has not done its job.
 
-        The lumped-validity warning is excepted and expected: templates deliberately
-        sweep the whole audio band rather than stopping at the limit, because seeing the
-        upper range marked as untrustworthy is more useful than not seeing it at all.
+        The two validity warnings are excepted and expected. Templates deliberately sweep
+        the whole audio band rather than stopping at the limit, because seeing the upper
+        range marked as untrustworthy is more useful than not seeing it at all -- and for
+        the same reason the two-way template puts its crossover where a real one goes,
+        which is above where a lumped model of an over-ear cup holds.
         """
+        expected = {"beyond-lumped-validity", "crossover-beyond-validity"}
         analysis = built(doc, key)
-        warnings = [w for w in run_checks(analysis).warnings if w.code != "beyond-lumped-validity"]
+        warnings = [w for w in run_checks(analysis).warnings if w.code not in expected]
         assert warnings == [], "\n".join(w.format() for w in warnings)
 
     def test_reports_where_its_results_stop_being_valid(self, doc, key):
