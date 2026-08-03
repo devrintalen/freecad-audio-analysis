@@ -189,6 +189,117 @@ class PlotResults(AudioCommand):
         return FreeCAD.ActiveDocument is not None and find_active_analysis() is not None
 
 
+class ExtractCavity(AudioCommand):
+    """Derive the air from selected parts.
+
+    The step between a mechanical model and an acoustic one: what gets simulated is the
+    air, not the parts, and almost nobody models the air directly (STRUCTURE.md §6.5).
+    """
+
+    Name = "ExtractCavity"
+    MenuText = "Extract cavity from selection"
+    ToolTip = (
+        "Derive an air volume by subtracting the selected parts from an envelope. "
+        "Select the parts that bound the air -- an assembly works. Open models need a "
+        "cap solid across the opening before anything is enclosed."
+    )
+    IconName = "Cavity"
+
+    def run(self) -> None:
+        import FreeCADGui
+
+        from freecad.audio_analysis.objects import find_active_analysis
+        from freecad.audio_analysis.objects.cavity_object import make_cavity
+
+        selection = FreeCADGui.Selection.getSelection()
+        if not selection:
+            FreeCAD.Console.PrintError(
+                "Audio Analysis: select the parts that bound the air first. An assembly "
+                "or a set of solids both work.\n"
+            )
+            return
+
+        analysis = find_active_analysis()
+        doc = FreeCAD.ActiveDocument
+        with transaction("Extract cavity"):
+            cavity = make_cavity(doc, analysis)
+            cavity.Boundary = list(selection)
+            cavity.Proxy.extract(cavity)
+
+        FreeCAD.Console.PrintMessage(
+            f"Audio Analysis: {cavity.Label} from {len(selection)} object(s):\n"
+            f"{cavity.Regions}\n"
+        )
+        if cavity.Volume.Value > 0:
+            FreeCAD.Console.PrintMessage(
+                f"Audio Analysis: kept {cavity.Volume.getValueAs('cm^3').Value:.3f} cm3. "
+                f"Link it from an acoustic volume, or use 'Volume from cavity'.\n"
+            )
+
+    def IsActive(self) -> bool:
+        try:
+            import FreeCADGui
+
+            return FreeCAD.ActiveDocument is not None and bool(
+                FreeCADGui.Selection.getSelection()
+            )
+        except ImportError:
+            return False
+
+
+class VolumeFromCavity(AudioCommand):
+    """Create an AcousticVolume that reads its volume from a selected cavity."""
+
+    Name = "VolumeFromCavity"
+    MenuText = "Volume from cavity"
+    ToolTip = (
+        "Create an acoustic volume linked to the selected cavity, so its value follows "
+        "the geometry instead of being typed."
+    )
+    IconName = "Volume"
+
+    def run(self) -> None:
+        import FreeCADGui
+
+        from freecad.audio_analysis.objects import find_active_analysis, network_objects as no
+
+        analysis = find_active_analysis()
+        if analysis is None:
+            FreeCAD.Console.PrintError("Audio Analysis: no active analysis.\n")
+            return
+
+        selection = FreeCADGui.Selection.getSelection()
+        sources = [o for o in selection if getattr(o, "Shape", None) is not None]
+        if not sources:
+            FreeCAD.Console.PrintError(
+                "Audio Analysis: select a cavity, or any solid representing the air.\n"
+            )
+            return
+
+        with transaction("Volume from cavity"):
+            for source in sources:
+                volume = no.make_volume(FreeCAD.ActiveDocument, analysis, "Volume")
+                volume.Shape = source
+                volume.Label = f"{source.Label} air"
+                volume.Proxy.execute(volume)
+                FreeCAD.Console.PrintMessage(
+                    f"Audio Analysis: {volume.Label} = "
+                    f"{volume.Volume.getValueAs('cm^3').Value:.3f} cm3 from {source.Label}.\n"
+                )
+
+    def IsActive(self) -> bool:
+        try:
+            import FreeCADGui
+
+            return (
+                FreeCAD.ActiveDocument is not None
+                and find_active_analysis() is not None
+                and bool(FreeCADGui.Selection.getSelection())
+            )
+        except ImportError:
+            return False
+
+
 class NewFromTemplate(AudioCommand):
     """Create an analysis pre-wired for a device type.
 
@@ -253,14 +364,16 @@ class NewFromTemplate(AudioCommand):
         return True
 
 
+GEOMETRY_COMMANDS = (ExtractCavity, VolumeFromCavity)
 MODEL_COMMANDS = (AddVolume, AddNode, AddDriver, AddPort, AddResistance, AddLeak, AddRadiation)
 SOLVE_COMMANDS = (AddFrequencySweep, AddLumpedSolver, RunLumpedSolver, PlotResults)
 TEMPLATE_COMMANDS = (NewFromTemplate,)
 
 
-def register_all() -> tuple[list[str], list[str], list[str]]:
+def register_all() -> tuple[list[str], list[str], list[str], list[str]]:
     """Register each group, returning their command names."""
     templates = [register(cls()) for cls in TEMPLATE_COMMANDS]
+    geometry = [register(cls()) for cls in GEOMETRY_COMMANDS]
     model = [register(cls()) for cls in MODEL_COMMANDS]
     solve = [register(cls()) for cls in SOLVE_COMMANDS]
-    return templates, model, solve
+    return templates, geometry, model, solve
