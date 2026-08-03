@@ -725,8 +725,19 @@ exact as long as the amplifier's output impedance is zero, since it then holds t
 node at a fixed voltage regardless of what the other branch draws — true to a fraction of
 a decibel for any normal damping factor. Set a non-zero source impedance and the branches
 genuinely do load each other; that coupling is *not* modelled, and the checks say so.
-`Solution.system_impedance()` reports the branches in parallel, which is the curve the
-finished product presents at its plug.
+**Two different impedance questions, and they need separate answers.**
+`input_impedance(driver)` is one branch's own impedance, computed with the other drivers
+*unpowered but still present* — the thing an impedance rig measures, and a property of the
+branch. `system_impedance()` is the drive voltage over the total current with everything
+powered: the curve the finished product presents at its plug, and what an amplifier has to
+survive. They are not related by the parallel-resistor formula, because with both drivers
+running each cone changes the pressure the other works against and so changes the current
+it draws — the same coupling, for the same reason, that makes superposing two single-driver
+models wrong.
+
+Conflating them is not academic: a tweeter behind a high-pass, shaken through the shared
+cavity by the woofer, is generating back-EMF while its own amplifier holds its terminals at
+nearly zero volts. Read that as an impedance and it comes out at 0 Ω.
 
 **Polarity is checked, because it is invisible.** An Nth-order filter rotates phase by N
 quarter-turns, so at the crossover frequency the two branches are N×90° apart. At LR4 that
@@ -925,6 +936,23 @@ result carries a short plain-language panel with the numbers that characterise t
 - sensitivity, and maximum SPL before excursion exceeds Xmax
 - RMS deviation from the chosen target curve, over a stated band
 - the frequency above which the result is not trustworthy, stated plainly
+
+Sensitivity is quoted **both** in dB/V and dB/mW with the impedance named, because
+headphones are specified both ways and the gap is large — 15 dB at 32 Ω, 20 dB at 300 Ω —
+so a figure without its units and its impedance means very little. It is quoted at 1 kHz
+*or the validity limit, whichever is lower*, because the conventional 1 kHz sits well above
+where a lumped model of an over-ear cup holds, and quoting there would be manufacturing a
+spec-sheet number out of the part of the curve the model cannot represent. It is a property
+of the product, so it appears once rather than once per driver, and is omitted entirely when
+the drivers are on separate amplifiers and there is no single figure to give.
+
+Target curves are **loaded, never shipped**: Harman, Diffuse Field and the rest are
+published research but not redistributable (§6.4), so `TargetCurve` reads a CSV or FRD the
+user supplies. The comparison level-matches first, because a target fixes *shape* rather
+than loudness — reporting an absolute difference would make the answer depend on the drive
+voltage, which has nothing to do with whether the tuning is right. And the band is stated
+and clipped to the overlap of the response, the target and the validity limit, since nearly
+every headphone matches nearly every target over a narrow enough range.
 
 Scalar metrics are computed from the **trusted** portion of a curve only, so a figure like
 "−3 dB at 45 Hz" is never quoted from a region the model cannot represent.

@@ -95,6 +95,96 @@ class LumpedSolver(AudioObject):
         return solution
 
 
+class TargetCurve(AudioObject):
+    """A response the design is aiming at, loaded from a file.
+
+    For headphones this is the whole argument. There is no room, no reflections and no
+    reference except an agreed curve, so "is this right" is a question about distance from
+    a target rather than about flatness.
+
+    The file is referenced rather than copied into the document, so editing the target
+    outside FreeCAD and recomputing picks up the change. Commercial target curves are
+    published research but not redistributable (STRUCTURE.md §6.4), which is why none ships
+    with the workbench.
+    """
+
+    Type = "Audio::TargetCurve"
+
+    def properties(self) -> Iterable[PropertySpec]:
+        return (
+            PropertySpec(
+                "App::PropertyFile", "File", "Target",
+                "CSV or FRD file: frequency in hertz, then level in decibels. The level's "
+                "absolute value does not matter -- a target fixes shape, and the "
+                "comparison level-matches before measuring.",
+                default="",
+            ),
+            PropertySpec(
+                "App::PropertyLink", "Observe", "Target",
+                "Node whose pressure is compared. Leave empty for the first volume, which "
+                "for a headphone is the ear cavity.",
+            ),
+            PropertySpec(
+                "App::PropertyFrequency", "BandStart", "Target",
+                "Low end of the comparison band", default=quantity(20.0, "Hz"),
+            ),
+            PropertySpec(
+                "App::PropertyFrequency", "BandStop", "Target",
+                "High end of the comparison band. Clipped to the lumped validity limit, "
+                "because a deviation figure quoted past it is not evidence.",
+                default=quantity(20000.0, "Hz"),
+            ),
+            PropertySpec(
+                "App::PropertyString", "Status", "Results",
+                "Outcome of the last comparison", default="not compared", read_only=True,
+            ),
+        )
+
+    def load(self, obj: Any):
+        """Read the referenced file. Raises TargetError with a readable message."""
+        from freecad.audio_analysis.results.target import TargetError, load_target
+
+        if not obj.File:
+            raise TargetError(f"{obj.Label} has no file set.")
+        return load_target(obj.File, label=obj.Label)
+
+    def compare(self, obj: Any, solution: Any, analysis: Any = None):
+        """Compare a solved response against this target. Returns a Deviation."""
+        from freecad.audio_analysis.results.target import TargetError, compare
+
+        node = obj.Observe.Name if obj.Observe is not None else None
+        if node is None:
+            nodes = solution.network.node_names()
+            if not nodes:
+                raise TargetError("this network has no node to compare at.")
+            node = nodes[0]
+
+        deviation = compare(
+            solution.pressure(node),
+            self.load(obj),
+            band=(
+                obj.BandStart.getValueAs("Hz").Value,
+                obj.BandStop.getValueAs("Hz").Value,
+            ),
+        )
+        obj.Status = (
+            f"{deviation.rms:.2f} dB RMS over "
+            f"{deviation.band[0]:.0f}-{deviation.band[1]:.0f} Hz"
+        )
+        return deviation
+
+
+def make_target_curve(doc: Any, analysis: Any = None, name: str = "TargetCurve") -> Any:
+    obj = doc.addObject("App::FeaturePython", name)
+    TargetCurve(obj)
+    attach_view_provider(
+        obj, "freecad.audio_analysis.viewproviders.network:ViewProviderNetworkObject"
+    )
+    if analysis is not None:
+        analysis.addObject(obj)
+    return obj
+
+
 def make_frequency_sweep(doc: Any, analysis: Any = None, name: str = "FrequencySweep") -> Any:
     obj = doc.addObject("App::FeaturePython", name)
     FrequencySweep(obj)

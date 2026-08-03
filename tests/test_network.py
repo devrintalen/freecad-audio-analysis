@@ -50,6 +50,18 @@ def resonance_from_impedance(solution, driver_name: str) -> float:
     return float(z.frequency[np.argmax(z.magnitude)])
 
 
+def system_resonance(solution) -> float:
+    """The same, read across the whole system with every driver powered.
+
+    The right probe once there is more than one driver: ``input_impedance`` is one
+    branch's own impedance, measured with the others unpowered, and a silent driver's
+    diaphragm is just another compliance. What a bench measurement of the finished pair
+    reads is the system curve.
+    """
+    z = solution.system_impedance()
+    return float(z.frequency[np.argmax(z.magnitude)])
+
+
 class TestDriverParameters:
     def test_derived_parameters_are_self_consistent(self):
         d = woofer()
@@ -266,29 +278,29 @@ class TestMultipleDrivers:
         rises. Superposing two independent single-driver runs cannot show this.
         """
         f = np.linspace(20.0, 200.0, 4001)
-        shared = resonance_from_impedance(self.build(0.005, shared=True).solve(f), "a")
-        separate = resonance_from_impedance(self.build(0.005, shared=False).solve(f), "a")
+        shared = system_resonance(self.build(0.005, shared=True).solve(f))
+        separate = system_resonance(self.build(0.005, shared=False).solve(f))
         assert shared > separate * 1.05
 
     def test_shared_volume_matches_the_halved_box_prediction(self):
         """Two identical drivers sharing volume V behave like one driver in V/2."""
         d = woofer()
         f = np.linspace(20.0, 250.0, 6001)
-        shared = resonance_from_impedance(self.build(0.010, shared=True).solve(f), "a")
+        shared = system_resonance(self.build(0.010, shared=True).solve(f))
         assert shared == pytest.approx(d.sealed_box_resonance(0.005, MEDIUM), rel=5e-3)
 
     def test_separate_boxes_do_not_couple(self):
         d = woofer()
         f = np.linspace(20.0, 250.0, 6001)
-        separate = resonance_from_impedance(self.build(0.010, shared=False).solve(f), "a")
+        separate = system_resonance(self.build(0.010, shared=False).solve(f))
         assert separate == pytest.approx(d.sealed_box_resonance(0.010, MEDIUM), rel=5e-3)
 
     def test_opposed_polarity_in_a_shared_volume_stiffens_differently(self):
         """Polarity changes the coupling, not just the sign of the output."""
         f = np.linspace(20.0, 250.0, 4001)
-        same = resonance_from_impedance(self.build(0.005, shared=True).solve(f), "a")
-        opposed = resonance_from_impedance(
-            self.build(0.005, shared=True, polarity_b=-1).solve(f), "a"
+        same = system_resonance(self.build(0.005, shared=True).solve(f))
+        opposed = system_resonance(
+            self.build(0.005, shared=True, polarity_b=-1).solve(f)
         )
         assert opposed != pytest.approx(same, rel=1e-3)
 

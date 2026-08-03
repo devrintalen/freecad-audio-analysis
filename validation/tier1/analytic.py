@@ -281,14 +281,18 @@ def shared_back_volume():
             )
         network.add(Compliance("box", box, "Box"))
         network.add(Compliance("front", FREE_AIR_M3, "Front"))
-        impedance = network.solve(FREQUENCY).input_impedance("D0")
+        # The *system* impedance, with every driver powered, which is what a bench
+        # measurement of the finished pair reads. A single branch measured with the other
+        # unpowered sees a different, lower resonance -- correctly, since the silent
+        # driver's diaphragm is then just another compliance.
+        impedance = network.solve(FREQUENCY).system_impedance()
         solved[label] = resonance_of(impedance.frequency, impedance.magnitude)
 
     network = Network(MEDIUM)
     network.add(Driver("D", WOOFER, front_node="Front", back_node="Box", voltage=2.83))
     network.add(Compliance("box", volume, "Box"))
     network.add(Compliance("front", FREE_AIR_M3, "Front"))
-    impedance = network.solve(FREQUENCY).input_impedance("D")
+    impedance = network.solve(FREQUENCY).system_impedance()
     superposed = resonance_of(impedance.frequency, impedance.magnitude)
 
     ratio = WOOFER.Vas(MEDIUM) / volume

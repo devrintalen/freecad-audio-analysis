@@ -472,18 +472,48 @@ def test_impedance_is_measured_at_the_filter_input():
     assert np.abs(filtered.values[1]) > 2.0 * np.abs(plain.values[1])
 
 
-def test_system_impedance_combines_branches_in_parallel():
+def test_system_impedance_is_the_drive_voltage_over_the_total_current():
+    """What an amplifier sees: one voltage, the sum of the currents it delivers."""
     network = Network(air.AirProperties.at())
     network.add(two_way_driver("Woofer"))
-    second = two_way_driver("Tweeter")
-    second.name = "Tweeter"
-    network.add(second)
+    network.add(two_way_driver("Tweeter"))
     network.add(Compliance("ear", 100e-6, "Ear"))
     solution = network.solve(np.array([1000.0]))
 
-    each = np.abs(solution.input_impedance("Woofer").values[0])
-    both = np.abs(solution.system_impedance().values[0])
-    assert both == pytest.approx(each / 2.0, rel=1e-9)
+    total = sum(solution.coil_current(name).values for name in ("Woofer", "Tweeter"))
+    assert solution.system_impedance().values[0] == pytest.approx(0.1 / total[0], rel=1e-12)
+
+
+def test_system_impedance_is_not_the_parallel_of_the_branch_impedances():
+    """Because the drivers share air, and each changes what the other works against.
+
+    Combining separately-measured branch impedances misses that, for the same reason and
+    in the same way that superposing two single-driver models does. The difference is
+    small for two identical drivers on a stiff node and it is not zero.
+    """
+    network = Network(air.AirProperties.at())
+    network.add(two_way_driver("Woofer"))
+    network.add(two_way_driver("Tweeter"))
+    network.add(Compliance("ear", 100e-6, "Ear"))
+    solution = network.solve(np.array([80.0]))
+
+    naive = 1.0 / sum(
+        1.0 / solution.input_impedance(name).values for name in ("Woofer", "Tweeter")
+    )
+    assert solution.system_impedance().values[0] != pytest.approx(naive[0], rel=1e-6)
+
+
+def test_system_impedance_needs_one_amplifier():
+    """Drivers on separate amplifiers have no combined impedance, so it is refused."""
+    network = Network(air.AirProperties.at())
+    network.add(two_way_driver("Woofer"))
+    loud = two_way_driver("Tweeter")
+    loud.voltage = 0.5
+    network.add(loud)
+    network.add(Compliance("ear", 100e-6, "Ear"))
+    solution = network.solve(np.array([1000.0]))
+    with pytest.raises(ValueError, match="not on one"):
+        solution.system_impedance()
 
 
 def test_system_impedance_needs_drivers():
@@ -493,6 +523,27 @@ def test_system_impedance_needs_drivers():
     solution = network.solve(np.array([1000.0]))
     with pytest.raises(KeyError):
         solution.system_impedance(["Missing"])
+
+
+def test_impedance_of_one_branch_ignores_the_other_driver():
+    """A silent driver is a load, not a source.
+
+    Reading a branch's impedance from the coupled solve mixes in the neighbour's
+    excitation: a tweeter behind a high-pass, shaken by the woofer through the shared
+    cavity, came out at 0 ohm before this was separated out.
+    """
+    frequency = np.array([60.0])
+    filtered = make_filter(response="Highpass", alignment="Linkwitz-Riley",
+                           order=4, frequency=2000.0)
+
+    network = Network(air.AirProperties.at())
+    network.add(two_way_driver("Woofer"))
+    network.add(two_way_driver("Tweeter", filtered))
+    network.add(Compliance("ear", 100e-6, "Ear"))
+    solution = network.solve(frequency)
+
+    impedance = np.abs(solution.input_impedance("Tweeter").values[0])
+    assert impedance > 30.0, "a 32 ohm driver cannot present near-zero impedance"
 
 
 def test_component_describe_covers_every_kind():

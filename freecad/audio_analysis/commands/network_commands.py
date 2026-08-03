@@ -252,6 +252,90 @@ class PlotResults(AudioCommand):
         return FreeCAD.ActiveDocument is not None and find_active_analysis() is not None
 
 
+class AddTargetCurve(_AddToAnalysis):
+    Name, object_name, IconName = "AddTargetCurve", "TargetCurve", "Target"
+    MenuText = "Add target curve"
+    ToolTip = (
+        "Load a response to aim at, from CSV or FRD. For a headphone this is the whole "
+        "argument: there is no room and no reference except an agreed curve."
+    )
+    factory = staticmethod(study.make_target_curve)
+
+    def run(self) -> None:
+        super().run()
+        target = FreeCAD.ActiveDocument.Objects[-1]
+        path = self.ask_for_file()
+        if not path:
+            FreeCAD.Console.PrintMessage(
+                f"Audio Analysis: {target.Label} added. Set its File property to a CSV or "
+                f"FRD target -- none ships with the workbench, because the published ones "
+                f"are not redistributable.\n"
+            )
+            return
+        target.File = path
+        FreeCAD.Console.PrintMessage(f"Audio Analysis: {target.Label} reads {path}.\n")
+
+    def ask_for_file(self) -> str:
+        try:
+            from PySide import QtWidgets
+
+            path, _ = QtWidgets.QFileDialog.getOpenFileName(
+                None, "Target curve", "", "Curves (*.csv *.frd *.txt);;All files (*)"
+            )
+            return path
+        except Exception:  # noqa: BLE001 -- headless or Qt unavailable
+            return ""
+
+
+class CompareAgainstTarget(AudioCommand):
+    """Report how far the most recent solve sits from each loaded target."""
+
+    Name = "CompareAgainstTarget"
+    MenuText = "Compare against target"
+    ToolTip = (
+        "Report RMS deviation from each target curve, over a stated band. The response "
+        "is level-matched first, because a target fixes shape rather than loudness."
+    )
+    IconName = "Target"
+
+    def run(self) -> None:
+        from freecad.audio_analysis.objects.base import is_audio_object
+        from freecad.audio_analysis.objects.study import LumpedSolver, TargetCurve
+        from freecad.audio_analysis.results.target import TargetError
+
+        analysis = find_active_analysis()
+        if analysis is None:
+            FreeCAD.Console.PrintError("Audio Analysis: no active analysis.\n")
+            return
+
+        solvers = [o for o in analysis.Group if is_audio_object(o, LumpedSolver.Type)]
+        solution = solvers[0].Proxy.solution if solvers else None
+        if solution is None:
+            FreeCAD.Console.PrintError(
+                "Audio Analysis: no results yet. Solve first.\n"
+            )
+            return
+
+        targets = [o for o in analysis.Group if is_audio_object(o, TargetCurve.Type)]
+        if not targets:
+            FreeCAD.Console.PrintError(
+                "Audio Analysis: no target curve in this analysis. Add one and point it "
+                "at a CSV or FRD file.\n"
+            )
+            return
+
+        for target in targets:
+            try:
+                deviation = target.Proxy.compare(target, solution, analysis)
+            except TargetError as exc:
+                FreeCAD.Console.PrintError(f"Audio Analysis: {target.Label}: {exc}\n")
+                continue
+            FreeCAD.Console.PrintMessage(deviation.format() + "\n")
+
+    def IsActive(self) -> bool:
+        return FreeCAD.ActiveDocument is not None and find_active_analysis() is not None
+
+
 class AddParameterSweep(_AddToAnalysis):
     Name, object_name, IconName = "AddParameterSweep", "ParameterSweep", "Sweep"
     MenuText = "Add parameter sweep"
@@ -571,7 +655,8 @@ MODEL_COMMANDS = (
 )
 SOLVE_COMMANDS = (
     AddFrequencySweep, AddLumpedSolver, RunLumpedSolver, PlotResults,
-    AddParameterSweep, RunParameterSweep, ExportResults,
+    AddParameterSweep, RunParameterSweep,
+    AddTargetCurve, CompareAgainstTarget, ExportResults,
 )
 TEMPLATE_COMMANDS = (NewFromTemplate,)
 

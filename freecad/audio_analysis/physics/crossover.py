@@ -301,6 +301,17 @@ class Filter:
         """Impedance at the amplifier terminals, from the solved coil quantities."""
         raise NotImplementedError
 
+    def amplifier_current(
+        self, terminal_voltage: np.ndarray, coil_current: np.ndarray, omega: np.ndarray
+    ) -> np.ndarray:
+        """Current the amplifier delivers, which a passive ladder does not pass through.
+
+        A shunt capacitor draws current the driver never sees, so the amplifier's current
+        and the coil's are different quantities -- and it is the amplifier's that adds up
+        across branches sharing one amplifier.
+        """
+        raise NotImplementedError
+
     def describe(self) -> str:
         raise NotImplementedError
 
@@ -353,6 +364,11 @@ class IdealFilter(Filter):
     ) -> np.ndarray:
         # Each driver has its own amplifier, so the load is the coil itself.
         return terminal_voltage / coil_current
+
+    def amplifier_current(
+        self, terminal_voltage: np.ndarray, coil_current: np.ndarray, omega: np.ndarray
+    ) -> np.ndarray:
+        return coil_current
 
     def describe(self) -> str:
         if self.response == "Bypass":
@@ -421,6 +437,12 @@ class PassiveLadder(Filter):
         return (A * terminal_voltage + B * coil_current) / (
             C * terminal_voltage + D * coil_current
         )
+
+    def amplifier_current(
+        self, terminal_voltage: np.ndarray, coil_current: np.ndarray, omega: np.ndarray
+    ) -> np.ndarray:
+        _, _, C, D = self.abcd(omega)
+        return C * terminal_voltage + D * coil_current
 
     def describe(self) -> str:
         if not self.components:

@@ -8,6 +8,7 @@ region the model cannot represent.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Any
 
@@ -107,6 +108,43 @@ def summarise_curve(
     )
 
 
+def sensitivity(
+    curve: ResponseCurve, voltage: float, resistance: float, reference: float | None = None
+) -> str:
+    """The number that goes on a spec sheet: dB SPL per volt, and per milliwatt.
+
+    Two conventions, because headphones are quoted both ways and the difference is large:
+    a 32 ohm driver reads 15 dB lower per milliwatt than per volt, and a 300 ohm one
+    reads 5 dB lower still. Converting between them needs the impedance, which is why a
+    figure quoted without its units and its impedance means very little.
+
+    ``dB/mW = dB/V + 10*log10(Re/1000)``, since one milliwatt into ``Re`` is
+    ``sqrt(Re/1000)`` volts.
+
+    Quoted at ``reference``, defaulting to 1 kHz **or the validity limit, whichever is
+    lower**. That default matters: the conventional 1 kHz sits well above where a lumped
+    model of an over-ear cup holds, so quoting there would be inventing a spec-sheet
+    number out of the part of the curve the model cannot represent.
+    """
+    if curve.quantity != "pressure":
+        raise ValueError(f"sensitivity needs a pressure curve, not {curve.quantity!r}")
+    if voltage <= 0.0 or resistance <= 0.0:
+        raise ValueError("drive voltage and resistance must both be positive")
+
+    trusted = curve.trusted()
+    if reference is None:
+        reference = min(1000.0, float(trusted.frequency.max()))
+    reference = float(np.clip(reference, trusted.frequency.min(), trusted.frequency.max()))
+
+    per_volt = trusted.spl_at(reference) - 20.0 * math.log10(voltage)
+    per_milliwatt = per_volt + 10.0 * math.log10(resistance / 1000.0)
+    caveat = "" if reference >= 1000.0 else " -- below the usual 1 kHz, to stay inside validity"
+    return (
+        f"  sensitivity {per_volt:.1f} dB/V, {per_milliwatt:.1f} dB/mW into "
+        f"{resistance:.0f} ohm, at {reference:.0f} Hz{caveat}"
+    )
+
+
 def excursion_summary(curve: ResponseCurve, xmax: float) -> str:
     """How close the diaphragm comes to its excursion limit."""
     if curve.quantity != "displacement":
@@ -147,4 +185,43 @@ def summarise_solution(solution: Any, analysis: Any = None) -> str:
             f"  impedance {impedance.magnitude.min():.1f}-{impedance.magnitude.max():.1f} ohm"
         )
 
+    system = _system_summary(solution, network)
+    if system:
+        lines.append("System:")
+        lines.extend(system)
+
     return "\n".join(lines)
+
+
+def _system_summary(solution: Any, network: Any) -> list[str]:
+    """Figures that belong to the whole device rather than to one driver.
+
+    Sensitivity is the clearest case. It is a property of the *product* -- so many decibels
+    in the ear for so many volts at the plug -- and quoting it per driver would print the
+    same ear-cavity number once for each, which reads as two independent measurements of
+    two different things.
+    """
+    nodes = network.node_names()
+    drivers = network.drivers
+    if not nodes or not drivers:
+        return []
+
+    voltages = {driver.voltage for driver in drivers}
+    if len(voltages) > 1 or 0.0 in voltages:
+        return []  # Separate amplifiers, or nothing driven: no single figure to quote.
+
+    lines: list[str] = []
+    try:
+        impedance = solution.system_impedance().trusted()
+    except (ValueError, KeyError):
+        return []
+
+    nominal = float(np.median(impedance.magnitude))
+    lines.append(
+        f"  impedance {impedance.magnitude.min():.1f}-{impedance.magnitude.max():.1f} ohm "
+        f"at the terminals (median {nominal:.0f})"
+    )
+    # Quoted against the first node, which for every headphone template is the ear cavity.
+    # A loudspeaker's sensitivity is a far-field figure and belongs with the radiation.
+    lines.append(sensitivity(solution.pressure(nodes[0]), voltages.pop(), nominal))
+    return lines

@@ -518,11 +518,43 @@ class Solution:
                       "space": "half" if half_space else "full"},
         )
 
-    def _electrical(self, driver_name: str) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def isolated(self, driver_name: str) -> "Solution":
+        """The same network re-solved with only ``driver_name`` driven.
+
+        Needed because *impedance* and *what is happening* are different questions once
+        there is more than one driver. In a shared cavity a silent driver is still pushed
+        by its neighbour, and its cone still generates back-EMF; using that velocity to
+        compute its electrical impedance mixes in the other driver's excitation and gives
+        an answer that is not a property of the branch at all. A tweeter behind a
+        high-pass came out at 0 ohm before this existed, which is how it was noticed.
+
+        Returns ``self`` unchanged for a single-driver network, where the two coincide.
+        """
+        drivers = self.network.drivers
+        if len(drivers) < 2:
+            return self
+        original = [driver.voltage for driver in drivers]
+        try:
+            for driver in drivers:
+                if driver.name != driver_name:
+                    driver.voltage = 0.0
+            return self.network.solve(self.frequency, valid_below=self.valid_below)
+        finally:
+            for driver, voltage in zip(drivers, original):
+                driver.voltage = voltage
+
+    def _electrical(
+        self, driver_name: str, *, isolate: bool = False
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """``(coil current, voltage across the coil, impedance at the amplifier)``.
 
         Everything electrical about one driver branch, derived once. The cone's velocity
         comes from the acoustic solve, so this is where the two domains meet.
+
+        ``isolate`` selects which question is being asked: with it, the other drivers are
+        muted and the result is the branch's own impedance, the thing a meter across the
+        terminals would read. Without it, the result is what is actually happening in the
+        working system, where a driver may be carrying current it did not ask for.
         """
         driver = self.network.element(driver_name)
         if not isinstance(driver, Driver):
@@ -531,7 +563,8 @@ class Solution:
         omega = self.omega
         gain, alpha, beta = driver.coefficients(omega)
         coil = driver.blocked_impedance(omega)
-        velocity = self.volume_velocity(driver_name).values / p.Sd
+        source = self.isolated(driver_name) if isolate else self
+        velocity = source.volume_velocity(driver_name).values / p.Sd
         # Polarity flips both BL and the resulting velocity, so their product -- and hence
         # the impedance -- is unchanged. Reversing a driver's wiring must not alter the
         # load the amplifier sees.
@@ -549,15 +582,18 @@ class Solution:
 
     def _branch_impedance(self, driver_name: str) -> np.ndarray:
         """Load impedance of one driver branch as the amplifier sees it, ohms."""
-        return self._electrical(driver_name)[2]
+        return self._electrical(driver_name, isolate=True)[2]
 
     def terminal_voltage(self, driver_name: str) -> ResponseCurve:
-        """Voltage actually across the voice coil, volts.
+        """Voltage actually across the voice coil in the working system, volts.
 
         Equal to the drive voltage when there is no crossover and no amplifier output
         impedance. With a passive filter it is neither the amplifier's voltage nor the
         filter's nominal response, because the driver's own impedance is part of the
         divider -- which is the quantity a meter on the driver terminals would read.
+
+        Taken from the full solve, not the isolated one: if a neighbouring driver is
+        shaking this cone, the voltage it generates is really there.
         """
         return ResponseCurve(
             self.frequency, self._electrical(driver_name)[1], quantity="voltage", unit="V",
@@ -593,21 +629,53 @@ class Solution:
     def system_impedance(self, driver_names: Sequence[str] | None = None) -> ResponseCurve:
         """Impedance of several branches wired in parallel across one amplifier, ohms.
 
-        The curve a two-way presents at its plug. Worth looking at: a passive crossover can
-        dip well below the nominal impedance of either driver where the two branches
-        conduct at once, and that dip is what an amplifier actually has to survive.
+        The curve a two-way presents at its plug, and the one an amplifier has to survive:
+        a passive crossover can dip well below the nominal impedance of either driver
+        where both branches conduct at once.
 
-        Assumes the branches share one amplifier of negligible output impedance, which is
-        the same assumption that lets each branch carry an independent filter.
+        Computed as ``V / sum(branch currents)`` from the **coupled** solve, not as the
+        parallel combination of the per-driver curves. Those two are not the same thing
+        once the drivers share air: with both driven, each cone's motion changes the
+        pressure the other works against and so changes the current it draws. Combining
+        separately-measured branch impedances would miss that, in the same way and for the
+        same reason that superposing two single-driver models does (§2.4).
+
+        Requires the branches to share one drive voltage, since that is what "one
+        amplifier" means. Drivers on separate amplifiers have no combined impedance.
         """
-        names = list(driver_names) if driver_names else [d.name for d in self.network.drivers]
-        if not names:
+        drivers = self.network.drivers
+        if driver_names is not None:
+            wanted = set(driver_names)
+            missing = wanted - {d.name for d in drivers}
+            if missing:
+                raise KeyError(f"no driver named {sorted(missing)[0]!r}")
+            drivers = [d for d in drivers if d.name in wanted]
+        if not drivers:
             raise ValueError("no drivers to combine")
-        admittance = np.zeros_like(self.frequency, dtype=complex)
-        for name in names:
-            admittance = admittance + 1.0 / self._branch_impedance(name)
+
+        voltages = {driver.voltage for driver in drivers}
+        if len(voltages) > 1:
+            raise ValueError(
+                f"these drivers are fed {sorted(voltages)} volts, so they are not on one "
+                f"amplifier and have no combined impedance. Read their impedances "
+                f"individually instead."
+            )
+        voltage = voltages.pop()
+        if voltage == 0.0:
+            raise ValueError("an undriven system has no impedance")
+
+        current = np.zeros_like(self.frequency, dtype=complex)
+        for driver in drivers:
+            coil_current, terminal, _ = self._electrical(driver.name)
+            filter_ = driver.filter
+            current = current + (
+                coil_current
+                if filter_ is None
+                else filter_.amplifier_current(terminal, coil_current, self.omega)
+            )
+        names = [d.name for d in drivers]
         return ResponseCurve(
-            self.frequency, 1.0 / admittance, quantity="impedance", unit="ohm",
+            self.frequency, voltage / current, quantity="impedance", unit="ohm",
             label=f"system impedance ({', '.join(names)})", valid_below=self.valid_below,
             metadata=self._metadata(),
         )

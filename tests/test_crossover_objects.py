@@ -479,10 +479,19 @@ class TestTwoWayTemplate:
         solution = network.solve(sweep_frequencies(analysis))
         assert np.all(np.isfinite(solution.pressure("EarCavity").spl))
 
-    def test_the_system_impedance_is_the_two_branches_in_parallel(self, analysis):
+    def test_the_system_impedance_is_the_voltage_over_the_total_current(self, analysis):
         network, _ = build_network(analysis)
         solution = network.solve(np.logspace(1.3, 4.3, 100))
         names = [d.name for d in network.drivers]
-        system = solution.system_impedance().values
-        expected = 1.0 / sum(1.0 / solution.input_impedance(n).values for n in names)
-        assert np.allclose(system, expected)
+        total = sum(solution.coil_current(n).values for n in names)
+        voltage = network.drivers[0].voltage
+        assert np.allclose(solution.system_impedance().values, voltage / total)
+
+    def test_no_driver_presents_an_absurd_impedance(self, analysis):
+        """A tweeter behind a high-pass is still a 32 ohm driver at 60 Hz, even though it
+        is being shaken by the woofer through the shared ear cavity."""
+        network, _ = build_network(analysis)
+        solution = network.solve(np.logspace(1.3, 4.3, 100))
+        for driver in network.drivers:
+            magnitude = solution.input_impedance(driver.name).magnitude
+            assert magnitude.min() > 0.5 * driver.parameters.Re
