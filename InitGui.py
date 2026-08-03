@@ -1,17 +1,20 @@
-"""FreeCAD GUI entry point for the Audio Analysis workbench.
+"""FreeCAD GUI entry point for the classic addon loader.
 
-FreeCAD executes this file at startup for every addon in its Mod directory. Keep it
-minimal and failure-tolerant: an exception here breaks FreeCAD's whole startup sequence,
-not just this workbench.
+FreeCAD runs this file for addons laid out with entry points at the folder root. This
+addon uses the ``freecad/audio_analysis/`` namespace layout, so FreeCAD normally takes
+the *other* route and imports ``freecad.audio_analysis.init_gui`` instead -- which is
+where the real registration lives. This file simply delegates, so the workbench appears
+whichever loader an installation happens to use.
+
+Registration is idempotent, so both loaders firing is harmless.
 """
 
 import FreeCAD
-import FreeCADGui
 
 try:
-    from freecad.audio_analysis.workbench import AudioAnalysisWorkbench
+    from freecad.audio_analysis import init_gui
 
-    FreeCADGui.addWorkbench(AudioAnalysisWorkbench())
+    init_gui.register()
 except Exception as exc:  # noqa: BLE001 -- must not break FreeCAD startup
     import traceback
 
