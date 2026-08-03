@@ -430,6 +430,49 @@ class Solution:
             metadata=self._metadata(),
         )
 
+    def far_field_pressure(
+        self,
+        sources: Sequence[str] | Sequence[tuple[str, int]],
+        distance: float = 1.0,
+        *,
+        half_space: bool = True,
+    ) -> ResponseCurve:
+        """Radiated pressure at ``distance`` metres from one or more radiating elements.
+
+        A loudspeaker's answer, unlike a headphone's: nothing encloses the listener, so
+        the result comes from volume *acceleration* rather than from a node pressure.
+        For a source small against the wavelength,
+
+            ``p = j omega rho U / (2 pi r)``   radiating into half space (in a baffle)
+            ``p = j omega rho U / (4 pi r)``   radiating into full space
+
+        ``sources`` names the elements that radiate. Because each element's volume
+        velocity is signed relative to its own node ordering, an entry may be given as
+        ``(name, sign)`` to flip it -- a vented box needs the port's flow oriented
+        outward like the cone's before the two are summed. A bare name means ``+1``.
+        """
+        if not sources:
+            raise ValueError("no radiating elements given")
+        if distance <= 0.0:
+            raise ValueError(f"distance must be positive, got {distance} m")
+
+        total = np.zeros_like(self.frequency, dtype=complex)
+        names: list[str] = []
+        for source in sources:
+            name, sign = source if isinstance(source, tuple) else (source, 1)
+            total = total + sign * self.volume_velocity(name).values
+            names.append(name)
+
+        solid_angle = 2.0 if half_space else 4.0
+        pressure = 1j * self.omega * self.medium.density * total / (solid_angle * math.pi * distance)
+        return ResponseCurve(
+            self.frequency, pressure, quantity="pressure", unit="Pa",
+            label=f"far field {distance:g} m ({', '.join(names)})",
+            valid_below=self.valid_below,
+            metadata={**self._metadata(), "distance": f"{distance:g} m",
+                      "space": "half" if half_space else "full"},
+        )
+
     def input_impedance(self, driver_name: str) -> ResponseCurve:
         """Electrical impedance the amplifier sees at this driver's terminals, ohms.
 

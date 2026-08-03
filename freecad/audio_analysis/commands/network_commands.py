@@ -189,12 +189,78 @@ class PlotResults(AudioCommand):
         return FreeCAD.ActiveDocument is not None and find_active_analysis() is not None
 
 
+class NewFromTemplate(AudioCommand):
+    """Create an analysis pre-wired for a device type.
+
+    Deciding which node a driver's back connects to is the most consequential and least
+    visible choice in a lumped model, so the workbench offers correct topologies rather
+    than a blank canvas (STRUCTURE.md §6.7).
+    """
+
+    Name = "NewFromTemplate"
+    MenuText = "New analysis from template"
+    ToolTip = (
+        "Create an analysis already wired for a headphone, earphone or loudspeaker. "
+        "Supplies a correct topology with plausible starting values."
+    )
+    IconName = "Template"
+
+    def run(self) -> None:
+        from freecad.audio_analysis.objects import make_analysis, make_environment
+        from freecad.audio_analysis.templates import TEMPLATES
+
+        key = self.ask_for_template(TEMPLATES)
+        if key is None:
+            return
+
+        doc = FreeCAD.ActiveDocument or FreeCAD.newDocument()
+        with transaction("New analysis from template"):
+            analysis = make_analysis(doc)
+            make_environment(doc, analysis)
+            from freecad.audio_analysis.templates import apply_template
+
+            template = apply_template(key, doc, analysis)
+
+        try:
+            import FreeCADGui
+
+            FreeCADGui.ActiveDocument.ActiveView.setActiveObject("AudioAnalysis", analysis)
+        except Exception:  # noqa: BLE001 -- activation is a convenience, not a requirement
+            pass
+
+        FreeCAD.Console.PrintMessage(
+            f"Audio Analysis: created '{template.name}'.\n"
+            f"  {template.summary}\n"
+            f"  Next: {template.next_steps}\n"
+        )
+
+    def ask_for_template(self, templates) -> str | None:
+        """Prompt for a template. Falls back to the first when no GUI is available."""
+        try:
+            from PySide import QtWidgets
+
+            names = [t.name for t in templates]
+            choice, accepted = QtWidgets.QInputDialog.getItem(
+                None, "New acoustic analysis", "Device type:", names, 0, False
+            )
+            if not accepted:
+                return None
+            return templates[names.index(choice)].key
+        except Exception:  # noqa: BLE001 -- headless or Qt unavailable
+            return templates[0].key
+
+    def IsActive(self) -> bool:
+        return True
+
+
 MODEL_COMMANDS = (AddVolume, AddNode, AddDriver, AddPort, AddResistance, AddLeak, AddRadiation)
 SOLVE_COMMANDS = (AddFrequencySweep, AddLumpedSolver, RunLumpedSolver, PlotResults)
+TEMPLATE_COMMANDS = (NewFromTemplate,)
 
 
-def register_all() -> tuple[list[str], list[str]]:
-    """Register both groups, returning their command names."""
+def register_all() -> tuple[list[str], list[str], list[str]]:
+    """Register each group, returning their command names."""
+    templates = [register(cls()) for cls in TEMPLATE_COMMANDS]
     model = [register(cls()) for cls in MODEL_COMMANDS]
     solve = [register(cls()) for cls in SOLVE_COMMANDS]
-    return model, solve
+    return templates, model, solve

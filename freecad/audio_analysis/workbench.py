@@ -37,13 +37,13 @@ class AudioAnalysisWorkbench(FreeCADGui.Workbench):
 
         analysis = analysis_commands.register_all()
         tools = measure_volume.register_all()
-        model, solve = network_commands.register_all()
+        templates, model, solve = network_commands.register_all()
 
-        self.appendToolbar("Audio Analysis", analysis)
+        self.appendToolbar("Audio Analysis", templates + analysis)
         self.appendToolbar("Audio Network", model)
         self.appendToolbar("Audio Solve", solve)
         self.appendToolbar("Audio Tools", tools)
-        for group in (analysis, model, solve, tools):
+        for group in (templates, analysis, model, solve, tools):
             self.appendMenu("&Audio Analysis", group)
 
         discovery.report()
