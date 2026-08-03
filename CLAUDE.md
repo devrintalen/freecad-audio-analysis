@@ -12,7 +12,10 @@ solver input decks, runs external FOSS solvers as subprocesses, and presents res
 choices, and the tier roadmap. Read it before making design decisions. If a change
 contradicts it, update `STRUCTURE.md` in the same commit.
 
-**Current state: design phase.** No implementation code exists yet.
+**Current state: Tiers 0 and 1 implemented and tested.** The lumped network solver,
+crossovers, cavity extraction from CAD, parameter sweeps and result export all work; no 3D
+solve exists yet. Nothing has been correlated against a physical measurement, so results
+are unvalidated — say so.
 
 ## The owner is not an audio engineer
 

@@ -66,6 +66,55 @@ def plot_curves(
     return axis
 
 
+def plot_family(family: Any, *, show: bool = True, smoothing: int | None = None) -> Any:
+    """Overlay a swept family, with a delta panel underneath.
+
+    Two panels, because the absolute view and the delta view answer different questions.
+    The overlay says what each setting sounds like; the delta says what *changing* the
+    setting did, and a 2 dB shift buried in a 40 dB roll-off is invisible on the first and
+    unmistakable on the second (STRUCTURE.md §6.9).
+
+    Without a reference member only the overlay is drawn -- a delta plot with nothing to
+    subtract would be a panel of zeroes pretending to be information.
+    """
+    import matplotlib.pyplot as plt
+
+    has_deltas = family.baseline() is not None
+    rows = 2 if has_deltas else 1
+    figure, axes = plt.subplots(rows, 1, figsize=(10, 4.5 * rows), sharex=True, squeeze=False)
+    overlay = axes[0][0]
+
+    for label, curve in zip(family.labels, family.curves):
+        shown = curve.smooth(smoothing) if smoothing else curve
+        values = shown.spl if family.quantity == "pressure" else shown.magnitude
+        overlay.semilogx(shown.frequency, values, label=label)
+    overlay.set_ylabel(
+        "SPL (dB re 20 µPa)" if family.quantity == "pressure" else family.curves[0].unit
+    )
+    overlay.set_title(f"{family.parameter} — {len(family)} runs")
+    overlay.grid(True, which="both", alpha=0.25)
+    overlay.legend(loc="best", fontsize=8, title=family.parameter)
+    _shade_invalid(overlay, family.curves[0])
+
+    if has_deltas:
+        delta_axis = axes[1][0]
+        for label, delta in zip(family.labels, family.deltas()):
+            delta_axis.semilogx(family.frequency, delta, label=label)
+        delta_axis.axhline(0.0, color="black", linewidth=0.8, alpha=0.6)
+        delta_axis.set_ylabel(f"Change vs {family.labels[family.reference]} (dB)")
+        delta_axis.set_title("What the change did")
+        delta_axis.grid(True, which="both", alpha=0.25)
+        _shade_invalid(delta_axis, family.curves[0], False)
+        delta_axis.set_xlabel("Frequency (Hz)")
+    else:
+        overlay.set_xlabel("Frequency (Hz)")
+
+    figure.tight_layout()
+    if show:
+        plt.show()
+    return figure
+
+
 def plot_solution(solution: Any, analysis: Any = None, *, show: bool = True) -> Any:
     """A four-panel overview of a solved network: SPL, impedance, excursion, group delay.
 

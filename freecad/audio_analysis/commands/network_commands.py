@@ -7,9 +7,21 @@ from typing import Any, Callable
 import FreeCAD
 
 from freecad.audio_analysis.commands.base import AudioCommand, register, transaction
-from freecad.audio_analysis.objects import crossover, find_active_analysis, study
+from freecad.audio_analysis.objects import crossover, find_active_analysis, parameter_sweep, study
 from freecad.audio_analysis.objects import network_objects as no
 from freecad.audio_analysis.objects.base import is_audio_object
+
+
+def _selected_of_type(type_name: str) -> list[Any]:
+    """Selected objects of one Audio type, or an empty list when there is no GUI."""
+    try:
+        import FreeCADGui
+
+        return [
+            o for o in FreeCADGui.Selection.getSelection() if is_audio_object(o, type_name)
+        ]
+    except (ImportError, AttributeError):
+        return []
 
 
 class _AddToAnalysis(AudioCommand):
@@ -224,6 +236,143 @@ class PlotResults(AudioCommand):
         return FreeCAD.ActiveDocument is not None and find_active_analysis() is not None
 
 
+class AddParameterSweep(_AddToAnalysis):
+    Name, object_name, IconName = "AddParameterSweep", "ParameterSweep", "Sweep"
+    MenuText = "Add parameter sweep"
+    ToolTip = (
+        "Vary one property across runs and overlay the results. One curve says what a "
+        "design does; a family says what a decision does."
+    )
+    factory = staticmethod(parameter_sweep.make_parameter_sweep)
+
+    def run(self) -> None:
+        """Create the sweep, pointing it at whatever is selected."""
+        try:
+            import FreeCADGui
+
+            selected = FreeCADGui.Selection.getSelection()
+        except (ImportError, AttributeError):
+            selected = []
+        super().run()
+        if not selected:
+            return
+        sweep = FreeCAD.ActiveDocument.Objects[-1]
+        sweep.Target = selected[0]
+        FreeCAD.Console.PrintMessage(
+            f"Audio Analysis: {sweep.Label} targets {selected[0].Label}. Set Property to "
+            f"the name of the property to vary, and Values to the values to try.\n"
+        )
+
+
+class RunParameterSweep(AudioCommand):
+    """Solve once per swept value and plot the family."""
+
+    Name = "RunParameterSweep"
+    MenuText = "Run parameter sweep"
+    ToolTip = "Solve the selected sweep across its values and overlay the responses."
+    IconName = "Sweep"
+
+    def run(self) -> None:
+        from freecad.audio_analysis.objects.base import is_audio_object
+        from freecad.audio_analysis.objects.parameter_sweep import ParameterSweep, SweepError
+        from freecad.audio_analysis.results.plotting import plot_family
+
+        analysis = find_active_analysis()
+        if analysis is None:
+            FreeCAD.Console.PrintError("Audio Analysis: no active analysis.\n")
+            return
+
+        sweeps = _selected_of_type(ParameterSweep.Type) or [
+            o for o in analysis.Group if is_audio_object(o, ParameterSweep.Type)
+        ]
+        if not sweeps:
+            FreeCAD.Console.PrintError(
+                "Audio Analysis: no parameter sweep in this analysis. Add one, point it at "
+                "an object, and name the property to vary.\n"
+            )
+            return
+
+        for sweep in sweeps:
+            try:
+                family = sweep.Proxy.run(sweep, analysis)
+            except SweepError as exc:
+                FreeCAD.Console.PrintError(f"Audio Analysis: {sweep.Label}: {exc}\n")
+                continue
+            FreeCAD.Console.PrintMessage(family.summarise() + "\n")
+            plot_family(family)
+
+    def IsActive(self) -> bool:
+        return FreeCAD.ActiveDocument is not None and find_active_analysis() is not None
+
+
+class ExportResults(AudioCommand):
+    """Write the most recent solve to disk.
+
+    Results are recomputed on demand rather than stored in the document (see
+    ``objects/study.py``), so export is how a curve outlives the session. CSV for
+    inspection and FRD because that is what loudspeaker tools read, which lets a result
+    leave for a crossover simulator or an enclosure program.
+    """
+
+    Name = "ExportResults"
+    MenuText = "Export results"
+    ToolTip = (
+        "Write the last solve to CSV and FRD files in a chosen folder: one per node "
+        "pressure, driver impedance and excursion."
+    )
+    IconName = "Plot"
+
+    def run(self) -> None:
+        from freecad.audio_analysis.objects.base import is_audio_object
+        from freecad.audio_analysis.objects.parameter_sweep import ParameterSweep
+        from freecad.audio_analysis.objects.study import LumpedSolver
+
+        analysis = find_active_analysis()
+        if analysis is None:
+            FreeCAD.Console.PrintError("Audio Analysis: no active analysis.\n")
+            return
+
+        solvers = [o for o in analysis.Group if is_audio_object(o, LumpedSolver.Type)]
+        solution = solvers[0].Proxy.solution if solvers else None
+        families = [
+            o.Proxy.family for o in analysis.Group
+            if is_audio_object(o, ParameterSweep.Type) and o.Proxy.family is not None
+        ]
+        if solution is None and not families:
+            FreeCAD.Console.PrintError(
+                "Audio Analysis: nothing to export. Solve first -- results are recomputed "
+                "on demand rather than stored in the document.\n"
+            )
+            return
+
+        directory = self.ask_for_directory()
+        if not directory:
+            return
+
+        from freecad.audio_analysis.results.export import export_all
+
+        written = export_all(directory, solution, families, analysis)
+        FreeCAD.Console.PrintMessage(
+            f"Audio Analysis: wrote {len(written)} file(s) to {directory}:\n  "
+            + "\n  ".join(written)
+            + "\n"
+        )
+
+    def ask_for_directory(self) -> str:
+        """Prompt for a destination. Returns "" when cancelled or unavailable."""
+        try:
+            from PySide import QtWidgets
+
+            return QtWidgets.QFileDialog.getExistingDirectory(
+                None, "Export audio analysis results"
+            )
+        except Exception:  # noqa: BLE001 -- headless or Qt unavailable
+            return ""
+
+    def IsActive(self) -> bool:
+        return FreeCAD.ActiveDocument is not None and find_active_analysis() is not None
+
+
 class ExtractCavity(AudioCommand):
     """Derive the air from selected parts.
 
@@ -403,7 +552,10 @@ GEOMETRY_COMMANDS = (ExtractCavity, VolumeFromCavity)
 MODEL_COMMANDS = (
     AddVolume, AddNode, AddDriver, AddCrossover, AddPort, AddResistance, AddLeak, AddRadiation,
 )
-SOLVE_COMMANDS = (AddFrequencySweep, AddLumpedSolver, RunLumpedSolver, PlotResults)
+SOLVE_COMMANDS = (
+    AddFrequencySweep, AddLumpedSolver, RunLumpedSolver, PlotResults,
+    AddParameterSweep, RunParameterSweep, ExportResults,
+)
 TEMPLATE_COMMANDS = (NewFromTemplate,)
 
 

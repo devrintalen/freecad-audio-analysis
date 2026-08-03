@@ -7,8 +7,10 @@ drives existing open-source solvers as external processes, and presents the resu
 the curves an acoustics engineer actually reads — sound pressure level, impedance,
 directivity.
 
-> **Status: early development.** Tier 0 (plumbing) is complete and tested. No acoustic
-> simulation is possible yet. See [STRUCTURE.md](STRUCTURE.md) for the full plan.
+> **Status: early development.** Tiers 0 and 1 are complete and tested — lumped-element
+> modelling works, including multiple drivers and crossovers. No 3D solve yet, and nothing
+> has been checked against a physical measurement, so treat results as unvalidated. See
+> [STRUCTURE.md](STRUCTURE.md) for the full plan.
 
 ---
 
@@ -32,7 +34,7 @@ Each tier is independently useful and ships on its own.
 | Tier | Capability | Engine | Status |
 |---|---|---|---|
 | 0 | Workbench skeleton, document objects, solver discovery | — | **complete** |
-| 1 | Lumped-element modelling: enclosures, ports, drivers, crossovers | ngspice / NumPy | next |
+| 1 | Lumped-element modelling: enclosures, ports, drivers, crossovers | NumPy | **complete** |
 | 2 | Lossless interior acoustics: cavity modes, horns, waveguides | Elmer Helmholtz | planned |
 | 3 | Thermoviscous acoustics: narrow slots, damping mesh, small cavities | Elmer LNS | planned |
 | 4 | Exterior radiation, directivity, structural coupling | NumCalc BEM, Elmer | planned |
@@ -40,15 +42,36 @@ Each tier is independently useful and ships on its own.
 
 ## What works today
 
-Tier 0 proves the plumbing end to end:
+**Modelling.** Start from a template — open-back, closed-back, two-way, in-ear, sealed or
+vented box — rather than a blank canvas, because choosing what a driver's back connects to
+is the most consequential decision in a lumped model and the least visible when it is
+wrong. Then wire drivers, cavities, ports, damping meshes, leaks and passive radiators into
+an explicit network.
 
-- An **analysis container** holding one study, with several allowed per document
-- An **Environment** object: enter temperature, pressure and humidity; get density, speed
-  of sound, characteristic impedance, Prandtl number and boundary-layer thickness
-- **Volume measurement** of selected solids, reported in litres, cm³ and m³
-- **Solver discovery** that reports what is installed and explains what is missing
-- Objects **round-trip through saved documents**, and files written by older versions
-  gain properties added since
+**Multiple drivers are first class.** Drivers sharing a volume load each other, so they are
+solved simultaneously; running two single-driver models and adding the curves gives a
+different, wrong answer, and it is most wrong in the crossover region. Crossovers are
+active or passive, and a passive ladder is evaluated into the driver's real impedance
+rather than the flat resistance its component values assumed — so the response you see is
+the one you would build.
+
+**Geometry drives the numbers.** Extract the air from your parts by subtraction and an
+acoustic volume follows the CAD instead of being typed. Port areas and leak perimeters read
+from referenced faces and edges.
+
+**Results.** SPL, electrical impedance, diaphragm excursion against Xmax, phase and group
+delay; a plain-language summary card; CSV and FRD export. Parameter sweeps overlay a family
+of runs with a delta view, which is how "what do my rear vents actually do" gets answered.
+
+**It says when not to believe it.** Every lumped result carries the frequency above which
+the cavity stops behaving as a compliance — about 400 Hz for a 105 mm over-ear cup — and
+plots grey out the region beyond it. Preflight checks explain, in physical terms, what is
+wrong and what to do about it.
+
+Underneath, from Tier 0: an analysis container, an Environment giving density, speed of
+sound and boundary-layer thickness from temperature/pressure/humidity, solver discovery
+that explains what is missing, and objects that round-trip through saved documents,
+gaining properties added since.
 
 Geometry is read from any container — `Part` primitives, PartDesign bodies, links,
 `App::Part` groups and full **assemblies** with externally linked documents. To see what
@@ -80,8 +103,10 @@ onward, see [docs/SETUP.md](docs/SETUP.md). Check what you have with:
 python3 scripts/check_env.py
 ```
 
-Tier 1 needs no external solver beyond ngspice; Elmer, Gmsh and NumCalc are only required
-by the tier that uses them, and the workbench installs and runs without them.
+Tier 1 needs **no external solver at all** — the lumped network is solved natively in
+NumPy, because several of its impedances (radiation, viscothermal slot) are not R/L/C and
+would be awkward in SPICE. Elmer, Gmsh and NumCalc are only required by the tier that uses
+them, and the workbench installs and runs without them.
 
 ## Development
 

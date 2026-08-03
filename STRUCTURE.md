@@ -372,7 +372,7 @@ AudioAnalysis                       ← container, one per study
 │   └── FarFieldSphere              ← evaluation grid for directivity
 ├── Study
 │   ├── FrequencySweep              ← log/linear/octave-fraction, or explicit list
-│   └── ParameterSweep              ← vary a named expression across runs
+│   └── ParameterSweep              ← vary one named property across runs
 ├── Solvers                         ← one or more, coexisting
 │   ├── SolverLumped
 │   ├── SolverElmerAcoustic         ← lossless | thermoviscous | coupled
@@ -917,6 +917,19 @@ A single curve says what a design does. Two curves say what a *decision* does.
 `ParameterSweep` runs a study across a value and overlays the family, with a delta view
 against a chosen reference. This is how "what do my rear vents do" gets answered (§6.7),
 and it is the feature most likely to change how someone designs.
+
+Three details make it trustworthy rather than merely convenient:
+
+* **The model is restored afterwards, including when a run fails.** A tool that quietly
+  left the last swept value in place would corrupt the design it was exploring, and the
+  corruption would only surface as a later solve answering a question nobody asked.
+* **Swept values carry their units** — `"8 cm^2"`, not `8`. A bare number in a quantity
+  field would be read in FreeCAD's internal unit, which is exactly the class of error that
+  produces a plausible wrong curve rather than a crash, so it is refused.
+* **A spread curve says where the parameter has any authority at all**, and the headline
+  figure is taken only from within the validity limit. A parameter that moves the response
+  by 8 dB at 80 Hz and 0.1 dB at 1 kHz is a bass control, and the sweep says so without
+  anyone having to read five overlaid lines.
 
 #### Provenance on everything
 
