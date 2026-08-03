@@ -595,6 +595,99 @@ def check_crossover_within_validity(analysis: Any) -> Iterator[Diagnostic]:
     )
 
 
+def analysis_validity(analysis: Any):
+    """``(report, labels)`` for an analysis, or ``(None, {})`` if it cannot be built."""
+    from freecad.audio_analysis.builder import (
+        BuildError,
+        build_network,
+        element_labels,
+        medium_of,
+    )
+    from freecad.audio_analysis.objects.network_objects import Driver
+
+    if not _find(analysis, Driver.Type):
+        return None, {}
+    try:
+        network, medium = build_network(analysis)
+    except BuildError:
+        return None, {}
+    return network.validity(medium), element_labels(analysis)
+
+
+@check
+def check_element_validity(analysis: Any) -> Iterator[Diagnostic]:
+    """Attribute the model's validity limit to the element that sets it.
+
+    One number hides too much. An over-ear analysis always expires at the cup, and quoted
+    alone that reads as though the whole model dies at 400 Hz. It does not: in the same
+    analysis the pad seal is a valid lumped element to 10 kHz and the rear vent to 1.3.
+    Knowing which part binds is what turns "this is invalid" into a decision about where
+    a 3D solve would actually buy something.
+    """
+    report, labels = analysis_validity(analysis)
+    if report is None or report.binding is None:
+        return
+
+    binding = report.binding
+    name = labels.get(binding.name, binding.name)
+    headroom = report.headroom
+    detail = report.format(labels)
+
+    yield Diagnostic(
+        severity=Severity.INFO,
+        code="validity-per-element",
+        message=(
+            f"Under 0.5 dB below {report.confident_below:.0f} Hz, about 2 dB by "
+            f"{report.limit:.0f} Hz, set by {name}."
+        ),
+        why=(
+            "A lumped element holds while the thing it stands for is small against a "
+            "wavelength, and each part of the model reaches that point somewhere "
+            "different. The error grows smoothly rather than stopping suddenly: it is "
+            "half a decibel at a sixteenth of a wavelength and about two at an eighth."
+            + (
+                f" Here {name} alone holds the model back by a factor of {headroom:.1f}."
+                if headroom and headroom > 1.5
+                else ""
+            )
+        ),
+        remedy=f"Per element:\n{detail}",
+        reference="STRUCTURE.md §2.4",
+    )
+
+
+@check
+def check_cavity_dimensions_are_measured(analysis: Any) -> Iterator[Diagnostic]:
+    """A volume with no measured span has its limit guessed, and guessed generously."""
+    report, labels = analysis_validity(analysis)
+    if report is None:
+        return
+
+    assumed = report.uses_assumed_dimensions()
+    if not assumed:
+        return
+    names = ", ".join(labels.get(item.name, item.name) for item in assumed)
+
+    yield Diagnostic(
+        severity=Severity.WARNING,
+        code="cavity-shape-assumed",
+        message=f"The validity limit for {names} is guessed from volume alone.",
+        why=(
+            "A volume does not fix a shape, and shape is what decides where standing "
+            "waves start. The guess assumes the most compact shape possible -- a sphere "
+            "-- so it is the most optimistic answer available. A 200 cm3 headphone cup "
+            "looks valid to 593 Hz as a sphere and is actually valid to 407 Hz across "
+            "its real 105 mm width, a 46% overstatement in the direction that flatters "
+            "the model."
+        ),
+        remedy=(
+            "Extract the cavity from the CAD and link it, which sets the span from the "
+            "solid, or type LargestDimension by hand."
+        ),
+        reference="STRUCTURE.md §6.5",
+    )
+
+
 @check
 def check_sweep_against_validity(analysis: Any) -> Iterator[Diagnostic]:
     """Warn when a sweep runs past the frequency where lumped modelling holds."""
@@ -608,24 +701,41 @@ def check_sweep_against_validity(analysis: Any) -> Iterator[Diagnostic]:
     from freecad.audio_analysis.builder import medium_of
 
     medium = medium_of(analysis)
-    dimension = solvers[0].LargestDimension.getValueAs("m").Value
-    if dimension <= 0.0:
-        yield Diagnostic(
-            severity=Severity.INFO,
-            code="validity-unknown",
-            message="Lumped validity is not being checked.",
-            why=(
-                "Without the model's largest internal dimension there is no way to know "
-                "where the lumped assumption stops holding, so results carry no limit."
-            ),
-            remedy="Set LargestDimension on the solver -- for an over-ear cup, its diameter.",
-            reference="STRUCTURE.md §2.4",
-            subject=solvers[0].Label,
+    override = solvers[0].LargestDimension.getValueAs("m").Value
+    if override > 0.0:
+        yield report_lumped_validity(
+            override, sweeps[0].Stop.getValueAs("Hz").Value, medium
         )
         return
 
-    yield report_lumped_validity(
-        dimension, sweeps[0].Stop.getValueAs("Hz").Value, medium
+    report, labels = analysis_validity(analysis)
+    if report is None or report.limit is None:
+        return
+    stop = sweeps[0].Stop.getValueAs("Hz").Value
+    if stop <= report.limit:
+        return
+
+    binding = report.binding
+    yield Diagnostic(
+        severity=Severity.WARNING,
+        code="beyond-lumped-validity",
+        message=(
+            f"Sweep reaches {stop:.0f} Hz but this model is lumped-valid to about "
+            f"{report.limit:.0f} Hz, set by "
+            f"{labels.get(binding.name, binding.name)}."
+        ),
+        why=(
+            "A cavity behaves as a single compliance only while it is small against the "
+            "wavelength. Above that it develops internal standing waves and path-length "
+            "differences that a lumped model cannot represent, so the curve stays smooth "
+            "and confident while becoming progressively wrong."
+        ),
+        remedy=(
+            f"Trust the result below ~{report.confident_below:.0f} Hz and read it with "
+            f"care up to {report.limit:.0f} Hz. For the range above, use a 3D solve "
+            f"(Tier 2 or 3). Plots mark both thresholds."
+        ),
+        reference="STRUCTURE.md §2.4",
     )
 
 

@@ -59,6 +59,21 @@ class Element:
         self.node_a = node_a
         self.node_b = node_b
 
+    def characteristic_length(self) -> tuple[float | None, str]:
+        """``(metres, how it was arrived at)`` — the span this element must be small over.
+
+        A lumped element is an approximation that holds while the thing it stands for is
+        small against a wavelength, and *which* dimension that is differs by element: a
+        cavity's widest internal span, a port's effective length, a diaphragm's diameter.
+        Each element answers for itself, so the model's limit can be attributed to the
+        part that sets it rather than quoted as one opaque number.
+
+        ``None`` means the element imposes no limit of its own — a radiation impedance
+        computed from the exact Bessel/Struve expression is not a lumped approximation at
+        all, and stays valid at any frequency.
+        """
+        return None, ""
+
     def impedance(self, omega: np.ndarray, medium: air.AirProperties) -> np.ndarray:
         """Acoustic impedance in Pa*s/m^3, one complex value per frequency."""
         raise NotImplementedError
@@ -83,11 +98,39 @@ class Compliance(Element):
     resonance.
     """
 
-    def __init__(self, name: str, volume: float, node_a: str, node_b: str = GROUND) -> None:
+    def __init__(
+        self,
+        name: str,
+        volume: float,
+        node_a: str,
+        node_b: str = GROUND,
+        *,
+        largest_dimension: float | None = None,
+    ) -> None:
         super().__init__(name, node_a, node_b)
         if volume <= 0.0:
             raise ValueError(f"{name}: volume must be positive, got {volume} m^3")
         self.volume = volume
+        self.largest_dimension = largest_dimension
+
+    @property
+    def equivalent_sphere_diameter(self) -> float:
+        """Diameter of a sphere of the same volume."""
+        return (6.0 * self.volume / math.pi) ** (1.0 / 3.0)
+
+    def characteristic_length(self) -> tuple[float | None, str]:
+        """The cavity's widest internal span, measured if the CAD can supply it.
+
+        A volume alone does not fix a shape, and shape is what decides where standing
+        waves start. A sphere is the most compact body of a given volume, so the
+        equivalent-sphere diameter is the *smallest* the widest span could possibly be --
+        which makes the fallback limit an optimistic one, and it says so. A 200 cm3 cup
+        modelled as a sphere looks valid to 620 Hz; measured across its real 105 mm width
+        it is valid to 407.
+        """
+        if self.largest_dimension and self.largest_dimension > 0.0:
+            return self.largest_dimension, "measured across the cavity"
+        return self.equivalent_sphere_diameter, "assumed compact -- optimistic"
 
     def compliance(self, medium: air.AirProperties) -> float:
         return self.volume / (medium.density * medium.speed_of_sound**2)
@@ -139,6 +182,15 @@ class AcousticMass(Element):
         """Physical length plus an end correction for each open end."""
         return self.length + self.flanged_ends * self.FLANGED_CORRECTION * self.radius
 
+    def characteristic_length(self) -> tuple[float | None, str]:
+        """The slug of air must move as one piece, so the duct's effective length rules.
+
+        Its mouth diameter competes when the duct is short and wide, so both are
+        considered and the larger wins.
+        """
+        span = max(self.effective_length, 2.0 * self.radius)
+        return span, "duct length and mouth diameter"
+
     def mass(self, medium: air.AirProperties) -> float:
         return medium.density * self.effective_length / self.area
 
@@ -164,6 +216,14 @@ class Resistance(Element):
         if resistance <= 0.0:
             raise ValueError(f"{name}: resistance must be positive, got {resistance}")
         self.resistance = resistance
+        #: Area the material covers, when known. Only sets the validity limit.
+        self.area: float | None = None
+
+    def characteristic_length(self) -> tuple[float | None, str]:
+        """A screen is thin, so what limits it is the aperture it covers, not itself."""
+        if not self.area:
+            return None, ""
+        return math.sqrt(4.0 * self.area / math.pi), "aperture the screen covers"
 
     @classmethod
     def from_rayls(
@@ -176,7 +236,9 @@ class Resistance(Element):
         """
         if area <= 0.0:
             raise ValueError(f"{name}: area must be positive, got {area} m^2")
-        return cls(name, specific_resistance / area, node_a, node_b)
+        element = cls(name, specific_resistance / area, node_a, node_b)
+        element.area = area
+        return element
 
     def impedance(self, omega: np.ndarray, medium: air.AirProperties) -> np.ndarray:
         return np.full(omega.shape, self.resistance, dtype=complex)
@@ -216,6 +278,16 @@ class Leak(Element):
     def area(self) -> float:
         return self.gap * self.width
 
+    def characteristic_length(self) -> tuple[float | None, str]:
+        """The flow path through the slit.
+
+        Not the slit's *width*: an earpad's leak is 350 mm around but only a few
+        millimetres deep, and it is the depth the air travels through that has to be short
+        against a wavelength. Taking the perimeter instead would put a healthy leak's
+        limit at 120 Hz and condemn every headphone model ever built.
+        """
+        return self.length, "depth of the leak path"
+
     def impedance(self, omega: np.ndarray, medium: air.AirProperties) -> np.ndarray:
         resistance = 12.0 * medium.dynamic_viscosity * self.length / (self.width * self.gap**3)
         # The mass term uses 6/5 of the geometric mass, the standard correction for the
@@ -245,6 +317,11 @@ class PistonRadiation(Element):
     @property
     def radius(self) -> float:
         return math.sqrt(self.area / math.pi)
+
+    def characteristic_length(self) -> tuple[float | None, str]:
+        # The Bessel/Struve expression is the exact baffled-piston result at every ka, so
+        # this element is not a lumped approximation and imposes no limit.
+        return None, ""
 
     def impedance(self, omega: np.ndarray, medium: air.AirProperties) -> np.ndarray:
         k = omega / medium.speed_of_sound
@@ -314,6 +391,17 @@ class Driver(Element):
     @property
     def back_node(self) -> str:
         return self.node_b
+
+    def characteristic_length(self) -> tuple[float | None, str]:
+        """The diaphragm's diameter, from its effective radiating area.
+
+        Thiele-Small treats the cone as a rigid piston moving as one. It stops being one
+        when its own bending waves catch up -- break-up -- and the diameter is what sets
+        where. A 58 mm headphone diaphragm is pistonic to around 740 Hz on this criterion,
+        which is a useful reminder that the driver model has a ceiling of its own and not
+        only the cavities do.
+        """
+        return 2.0 * math.sqrt(self.parameters.Sd / math.pi), "diaphragm diameter"
 
     def coefficients(self, omega: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """``(gain, alpha, beta)`` describing everything electrical ahead of the coil.
@@ -393,6 +481,10 @@ class PassiveRadiator(Element):
         self.area = area
         self.resistance = resistance
 
+    def characteristic_length(self) -> tuple[float | None, str]:
+        """Diaphragm diameter, for the same reason a driver's is."""
+        return 2.0 * math.sqrt(self.area / math.pi), "diaphragm diameter"
+
     @property
     def resonance(self) -> float:
         """Free resonance of the passive radiator, Hz."""
@@ -416,13 +508,21 @@ class Solution:
     medium: air.AirProperties
     #: Frequency above which the lumped assumption fails, if known (§2.4).
     valid_below: float | None = None
+    #: Name of the element that sets that limit, so a plot can say what to fix.
+    limited_by: str = ""
 
     @property
     def omega(self) -> np.ndarray:
         return 2.0 * math.pi * self.frequency
 
+    def validity(self):
+        """The per-element validity report behind this solution's limit."""
+        return self.network.validity(self.medium)
+
     def _metadata(self) -> dict[str, str]:
+        limited = {"limited by": self.limited_by} if self.limited_by else {}
         return {
+            **limited,
             "solver": "lumped network",
             "medium": (
                 f"{air.to_celsius(self.medium.temperature):.1f} C, "
@@ -773,6 +873,12 @@ class Network:
         curves["sum"] = replace_label(total, "sum")
         return curves
 
+    def validity(self, medium: air.AirProperties | None = None):
+        """Where each element stops being a lumped element, and which one binds."""
+        from freecad.audio_analysis.physics.validity import assess
+
+        return assess(self.elements, medium or self.medium)
+
     def solve(
         self,
         frequency: Sequence[float] | np.ndarray,
@@ -784,6 +890,10 @@ class Network:
         Assembles ``Y p = I`` where ``Y`` is the nodal admittance matrix in acoustic
         units, ``p`` the node pressures and ``I`` the injected volume velocities. The
         whole sweep is one batched solve.
+
+        ``valid_below`` defaults to the network's own limit rather than to "unstated",
+        because CLAUDE.md requires every lumped result to carry one and a default of None
+        would make the omission the easy path. Pass an explicit value to override it.
         """
         if not self.elements:
             raise ValueError("cannot solve an empty network")
@@ -840,10 +950,12 @@ class Network:
                 f"isolated or two elements form a loop with no resistance."
             ) from exc
 
+        report = self.validity()
         return Solution(
             frequency=frequency,
             pressures={node: solved[:, i] for node, i in index.items()},
             network=self,
             medium=self.medium,
-            valid_below=valid_below,
+            valid_below=report.limit if valid_below is None else valid_below,
+            limited_by=report.binding.name if report.binding is not None else "",
         )

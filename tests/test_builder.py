@@ -269,13 +269,44 @@ class TestTier1Checks:
         doc.recompute()
         assert any(d.code == "driver-unloaded" for d in run_checks(analysis).warnings)
 
-    def test_missing_largest_dimension_is_noted(self, headphone, doc):
+    def test_the_validity_limit_is_attributed_to_an_element(self, headphone, doc):
+        """No solver setting is needed any more: each element supplies its own span."""
         from freecad.audio_analysis.checks import run_checks
 
         study.make_frequency_sweep(doc, headphone)
         study.make_lumped_solver(doc, headphone)
         doc.recompute()
-        assert any(d.code == "validity-unknown" for d in run_checks(headphone).diagnostics)
+        found = {d.code: d for d in run_checks(headphone).diagnostics}
+        assert "validity-per-element" in found
+        # The cup is the widest thing in a headphone, so it is always the constraint.
+        assert "CupCavity" in found["validity-per-element"].message
+
+    def test_a_cavity_with_no_measured_span_is_flagged(self, headphone, doc):
+        """Guessing the span from volume alone assumes a sphere, which flatters the model."""
+        from freecad.audio_analysis.checks import run_checks
+
+        doc.recompute()
+        assert any(d.code == "cavity-shape-assumed" for d in run_checks(headphone).warnings)
+
+    def test_measuring_the_span_silences_it_and_lowers_the_limit(self, headphone, doc):
+        from freecad.audio_analysis.checks import run_checks
+
+        before = next(
+            d for d in run_checks(headphone).diagnostics if d.code == "validity-per-element"
+        )
+        for label, span in (("EarCavity", "90 mm"), ("CupCavity", "105.6 mm")):
+            next(o for o in headphone.Group if o.Label == label).LargestDimension = (
+                FreeCAD.Units.Quantity(span)
+            )
+        doc.recompute()
+
+        codes = {d.code for d in run_checks(headphone).diagnostics}
+        after = next(
+            d for d in run_checks(headphone).diagnostics if d.code == "validity-per-element"
+        )
+        assert "cavity-shape-assumed" not in codes
+        assert "407 Hz" in after.message
+        assert after.message != before.message
 
 
 class TestSummary:

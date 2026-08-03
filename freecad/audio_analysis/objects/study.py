@@ -59,12 +59,21 @@ class LumpedSolver(AudioObject):
         super().__init__(obj)
         self.solution = None
 
+    def __init__(self, obj: Any) -> None:
+        super().__init__(obj)
+        self.validity = None
+
     def properties(self) -> Iterable[PropertySpec]:
         return (
             PropertySpec("App::PropertyLength", "LargestDimension", "Validity",
-                         "Largest internal dimension of the model. Sets the frequency "
-                         "above which lumped results stop being trustworthy; leave at "
-                         "zero to skip the check.", default=quantity(0.0, "mm")),
+                         "Override for the model's largest internal dimension. Leave at "
+                         "zero and each element supplies its own -- a cavity its widest "
+                         "span, a port its length, a diaphragm its diameter -- and the "
+                         "narrowest wins. Set it only to force a limit by hand.",
+                         default=quantity(0.0, "mm")),
+            PropertySpec("App::PropertyString", "ValidBelow", "Validity",
+                         "Where this model stops being a lumped model, and what sets it",
+                         default="not run", read_only=True),
             PropertySpec("App::PropertyString", "Status", "Results",
                          "Outcome of the last solve", default="not run", read_only=True),
         )
@@ -72,9 +81,10 @@ class LumpedSolver(AudioObject):
     def loads(self, state: Any) -> None:
         super().loads(state)
         self.solution = None  # Results are transient; never restored from file.
+        self.validity = None
 
     def validity_limit(self, obj: Any, medium: Any) -> float | None:
-        """Frequency above which lumped modelling of this model fails (§2.4)."""
+        """Manual override for the validity limit, or None to derive it per element."""
         dimension = obj.LargestDimension.getValueAs("m").Value
         if dimension <= 0.0:
             return None
@@ -82,12 +92,31 @@ class LumpedSolver(AudioObject):
 
     def solve(self, obj: Any, analysis: Any) -> Any:
         """Build the network from ``analysis`` and solve it. Returns the Solution."""
-        from freecad.audio_analysis.builder import build_network, sweep_frequencies
+        from freecad.audio_analysis.builder import (
+            build_network,
+            element_labels,
+            sweep_frequencies,
+        )
 
         network, medium = build_network(analysis)
         frequencies = sweep_frequencies(analysis)
-        solution = network.solve(frequencies, valid_below=self.validity_limit(obj, medium))
+        override = self.validity_limit(obj, medium)
+        solution = network.solve(frequencies, valid_below=override)
         self.solution = solution
+        self.validity = network.validity(medium)
+
+        labels = element_labels(analysis)
+        if override is not None:
+            obj.ValidBelow = f"{override:.0f} Hz (set by hand)"
+        elif self.validity.limit is None:
+            obj.ValidBelow = "no lumped limit -- nothing in this model is an approximation"
+        else:
+            binding = self.validity.binding
+            obj.ValidBelow = (
+                f"under 0.5 dB below {self.validity.confident_below:.0f} Hz, "
+                f"about 2 dB by {self.validity.limit:.0f} Hz, set by "
+                f"{labels.get(binding.name, binding.name)}"
+            )
         obj.Status = (
             f"solved {len(frequencies)} points, "
             f"{len(network.elements)} elements, {len(network.node_names())} nodes"

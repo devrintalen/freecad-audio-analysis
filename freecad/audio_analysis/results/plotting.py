@@ -22,18 +22,48 @@ INVALID_SHADE = "#c0392b"
 
 
 def _shade_invalid(axis: Any, curve: ResponseCurve, annotate: bool = True) -> None:
-    """Grey out the part of the axis beyond the curve's validity limit."""
+    """Shade the axis by how far the lumped assumption has been stretched.
+
+    Three bands, not two, because the error grows smoothly rather than falling off a
+    cliff. A cavity's lumped impedance is out by ``kL cot(kL)``: under half a decibel at a
+    sixteenth of a wavelength, about two at an eighth, and six not far above. Drawing one
+    hard line at the eighth implies the curve is perfect up to it and worthless after,
+    and neither half of that is true.
+
+    The lighter band is where the answer is worth reading and worth distrusting. Naming
+    the element that set the limit turns "this is invalid" into something actionable --
+    usually "the cup is the problem, and everything else in the model is fine much
+    higher".
+    """
     limit = curve.valid_below
     if limit is None or limit >= curve.frequency.max():
         return
-    axis.axvspan(limit, curve.frequency.max(), color=INVALID_SHADE, alpha=0.12, zorder=0)
+
+    # The confident threshold is exactly half the limit: lambda/16 against lambda/8.
+    confident = limit / 2.0
+    top = curve.frequency.max()
+    if confident > curve.frequency.min():
+        axis.axvspan(confident, limit, color=INVALID_SHADE, alpha=0.06, zorder=0)
+    axis.axvspan(limit, top, color=INVALID_SHADE, alpha=0.16, zorder=0)
     axis.axvline(limit, color=INVALID_SHADE, linestyle="--", linewidth=1.2, zorder=1)
-    if annotate:
+    axis.axvline(confident, color=INVALID_SHADE, linestyle=":", linewidth=1.0, zorder=1)
+
+    if not annotate:
+        return
+    culprit = curve.metadata.get("limited by", "")
+    axis.annotate(
+        f"lumped model invalid above {limit:.0f} Hz"
+        + (f" ({culprit})" if culprit else ""),
+        xy=(limit, 0.02), xycoords=("data", "axes fraction"),
+        xytext=(4, 4), textcoords="offset points",
+        color=INVALID_SHADE, fontsize=8, rotation=90, va="bottom",
+    )
+    if confident > curve.frequency.min():
         axis.annotate(
-            f"lumped model invalid above {limit:.0f} Hz",
-            xy=(limit, 0.02), xycoords=("data", "axes fraction"),
-            xytext=(4, 4), textcoords="offset points",
-            color=INVALID_SHADE, fontsize=8, rotation=90, va="bottom",
+            f"under 0.5 dB below {confident:.0f} Hz",
+            xy=(confident, 0.02), xycoords=("data", "axes fraction"),
+            xytext=(-10, 4), textcoords="offset points",
+            color=INVALID_SHADE, fontsize=7, rotation=90, va="bottom", alpha=0.8,
         )
 
 

@@ -45,22 +45,27 @@ class Template:
         return created
 
 
-def _sweep_and_solver(doc, analysis, largest_dimension_mm: float, stop_hz: float) -> list[Any]:
-    """Every template gets a sweep and a solver, with validity checking already set up."""
+def _sweep_and_solver(doc, analysis, stop_hz: float) -> list[Any]:
+    """Every template gets a sweep and a solver.
+
+    The solver's LargestDimension is deliberately left at zero. Each element now supplies
+    its own span -- a cavity its widest, a port its length, a diaphragm its diameter --
+    and the narrowest wins, which is both more accurate and able to say *which* part of
+    the model is the constraint. Setting it here would override all of that with one
+    hand-typed number.
+    """
     sweep = study.make_frequency_sweep(doc, analysis)
     sweep.Stop = q(stop_hz, "Hz")
-    solver = study.make_lumped_solver(doc, analysis)
-    solver.LargestDimension = q(largest_dimension_mm, "mm")
-    return [sweep, solver]
+    return [sweep, study.make_lumped_solver(doc, analysis)]
 
 
 def _build_over_ear(doc, analysis, *, vented: bool) -> list[Any]:
     ear = no.make_volume(doc, analysis, "EarCavity")
-    ear.Volume = q(100.0, "cm^3")
+    ear.Volume, ear.LargestDimension = q(100.0, "cm^3"), q(90.0, "mm")
     ear.Description = "Air between the earpad and the ear -- its pressure is the result"
 
     cup = no.make_volume(doc, analysis, "CupCavity")
-    cup.Volume = q(200.0, "cm^3")
+    cup.Volume, cup.LargestDimension = q(200.0, "cm^3"), q(105.0, "mm")
     cup.Description = "Air behind the diaphragm, inside the cup"
 
     driver = no.make_driver(doc, analysis, "Driver")
@@ -84,7 +89,7 @@ def _build_over_ear(doc, analysis, *, vented: bool) -> list[Any]:
         mesh.SpecificResistance = 20.0
         created += [behind, vent, mesh]
 
-    return created + _sweep_and_solver(doc, analysis, 105.0, 2000.0)
+    return created + _sweep_and_solver(doc, analysis, 2000.0)
 
 
 def _build_over_ear_two_way(doc, analysis) -> list[Any]:
@@ -101,15 +106,15 @@ def _build_over_ear_two_way(doc, analysis) -> list[Any]:
     the cup would be modulated by the woofer's back pressure.
     """
     ear = no.make_volume(doc, analysis, "EarCavity")
-    ear.Volume = q(100.0, "cm^3")
+    ear.Volume, ear.LargestDimension = q(100.0, "cm^3"), q(90.0, "mm")
     ear.Description = "Air between the earpad and the ear -- its pressure is the result"
 
     cup = no.make_volume(doc, analysis, "CupCavity")
-    cup.Volume = q(200.0, "cm^3")
+    cup.Volume, cup.LargestDimension = q(200.0, "cm^3"), q(105.0, "mm")
     cup.Description = "Air behind the woofer, inside the cup"
 
     chamber = no.make_volume(doc, analysis, "TweeterChamber")
-    chamber.Volume = q(3.0, "cm^3")
+    chamber.Volume, chamber.LargestDimension = q(3.0, "cm^3"), q(20.0, "mm")
     chamber.Description = "Sealed volume behind the tweeter, isolating it from the cup"
 
     woofer = no.make_driver(doc, analysis, "Woofer")
@@ -149,20 +154,20 @@ def _build_over_ear_two_way(doc, analysis) -> list[Any]:
     mesh.Area, mesh.SpecificResistance = q(8.0, "cm^2"), 20.0
 
     created = [ear, cup, chamber, woofer, tweeter, low, high, seal, behind, vent, mesh]
-    return created + _sweep_and_solver(doc, analysis, 105.0, 20000.0)
+    return created + _sweep_and_solver(doc, analysis, 20000.0)
 
 
 def _build_in_ear(doc, analysis) -> list[Any]:
     front = no.make_volume(doc, analysis, "FrontVolume")
-    front.Volume = q(0.5, "cm^3")
+    front.Volume, front.LargestDimension = q(0.5, "cm^3"), q(10.0, "mm")
     front.Description = "Between the diaphragm and the nozzle"
 
     canal = no.make_volume(doc, analysis, "EarCanal")
-    canal.Volume = q(1.3, "cm^3")
+    canal.Volume, canal.LargestDimension = q(1.3, "cm^3"), q(25.0, "mm")
     canal.Description = "Occluded ear volume -- its pressure is the result"
 
     back = no.make_volume(doc, analysis, "BackVolume")
-    back.Volume = q(0.3, "cm^3")
+    back.Volume, back.LargestDimension = q(0.3, "cm^3"), q(8.0, "mm")
     back.Description = "Sealed volume behind the diaphragm"
 
     driver = no.make_driver(doc, analysis, "Driver")
@@ -185,12 +190,12 @@ def _build_in_ear(doc, analysis) -> list[Any]:
 
     created = [front, canal, back, driver, nozzle, mesh, seal]
     # A 1.3 cm^3 cavity stays lumped far higher than an over-ear cup does.
-    return created + _sweep_and_solver(doc, analysis, 12.0, 10000.0)
+    return created + _sweep_and_solver(doc, analysis, 10000.0)
 
 
 def _build_box(doc, analysis, *, vented: bool) -> list[Any]:
     box = no.make_volume(doc, analysis, "BoxVolume")
-    box.Volume = q(10.0, "l")
+    box.Volume, box.LargestDimension = q(10.0, "l"), q(400.0, "mm")
     box.Description = "Enclosure interior"
 
     driver = no.make_driver(doc, analysis, "Driver")
@@ -209,7 +214,7 @@ def _build_box(doc, analysis, *, vented: bool) -> list[Any]:
         port.Area, port.Length = q(20.0, "cm^2"), q(120.0, "mm")
         created.append(port)
 
-    return created + _sweep_and_solver(doc, analysis, 300.0, 500.0)
+    return created + _sweep_and_solver(doc, analysis, 500.0)
 
 
 TEMPLATES: tuple[Template, ...] = (

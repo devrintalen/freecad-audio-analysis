@@ -125,13 +125,21 @@ class AcousticVolume(NetworkObject):
                 "it on every recompute.",
             ),
             PropertySpec(
+                "App::PropertyLength", "LargestDimension", "Volume",
+                "Widest internal span of the cavity. Sets the frequency above which this "
+                "volume stops behaving as a single compliance. Read from the linked solid "
+                "when there is one; leave at zero and it is guessed from the volume, which "
+                "assumes a compact shape and is therefore optimistic.",
+                default=quantity(0.0, "mm"),
+            ),
+            PropertySpec(
                 "App::PropertyString", "Description", "Volume",
                 "What this cavity represents", default="",
             ),
         )
 
     def execute(self, obj: Any) -> None:
-        """Refresh the volume from the referenced solid, if there is one."""
+        """Refresh the volume and the cavity's span from the referenced solid."""
         shape_source = getattr(obj, "Shape", None)
         if shape_source is None:
             return
@@ -143,6 +151,29 @@ class AcousticVolume(NetworkObject):
             FreeCAD.Console.PrintWarning(f"Audio Analysis: {obj.Label}: {exc}\n")
             return
         obj.Volume = quantity(measurement.volume_mm3, "mm^3")
+        span = self.span_of(shape_source)
+        if span:
+            obj.LargestDimension = quantity(span, "mm")
+
+    @staticmethod
+    def span_of(shape_source: Any) -> float:
+        """Widest bounding-box extent of a solid, in mm; 0.0 if it has no shape.
+
+        The widest *extent* rather than the box diagonal. What matters is the distance a
+        standing wave has to travel to establish itself, and for the disc-shaped cavity
+        inside a headphone cup that is its diameter -- the diagonal would add the depth to
+        it and understate the validity limit by a third.
+        """
+        shape = getattr(shape_source, "Shape", None)
+        if shape is None or shape.isNull():
+            return 0.0
+        box = shape.BoundBox
+        return float(max(box.XLength, box.YLength, box.ZLength))
+
+    def largest_dimension_m(self, obj: Any) -> float | None:
+        """The cavity span in metres, or None when it has not been established."""
+        value = obj.LargestDimension.getValueAs("m").Value
+        return value if value > 0.0 else None
 
     def volume_m3(self, obj: Any) -> float:
         return obj.Volume.getValueAs("m^3").Value

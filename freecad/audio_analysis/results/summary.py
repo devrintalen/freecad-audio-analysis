@@ -190,6 +190,14 @@ def summarise_solution(solution: Any, analysis: Any = None) -> str:
         lines.append("System:")
         lines.extend(system)
 
+    # Last, and never omitted: what part of the above can be believed, and why.
+    labels = {}
+    if analysis is not None:
+        from freecad.audio_analysis.builder import element_labels
+
+        labels = element_labels(analysis)
+    lines.append(solution.validity().format(labels))
+
     return "\n".join(lines)
 
 

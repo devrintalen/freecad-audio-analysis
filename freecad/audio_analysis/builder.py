@@ -126,7 +126,12 @@ def build_network(analysis: Any) -> tuple[net_physics.Network, air.AirProperties
         if value <= 0.0:
             raise BuildError(f"{volume.Label}: volume must be positive, got {value} m^3")
         network.add(
-            net_physics.Compliance(f"{volume.Name}_compliance", value, volume.Name)
+            net_physics.Compliance(
+                f"{volume.Name}_compliance",
+                value,
+                volume.Name,
+                largest_dimension=volume.Proxy.largest_dimension_m(volume),
+            )
         )
 
     for driver in drivers:
@@ -205,6 +210,22 @@ def build_network(analysis: Any) -> tuple[net_physics.Network, air.AirProperties
         )
 
     return network, medium
+
+
+def element_labels(analysis: Any) -> dict[str, str]:
+    """Map network element names back to the labels the user sees in the tree.
+
+    The physics layer names elements after the document object's internal ``Name``, which
+    is stable but not what anyone reads. A validity table headed ``Volume001_compliance``
+    would be technically correct and practically useless.
+    """
+    labels: dict[str, str] = {}
+    for obj in _members(analysis):
+        if not is_audio_object(obj):
+            continue
+        labels[obj.Name] = obj.Label
+        labels[f"{obj.Name}_compliance"] = obj.Label
+    return labels
 
 
 def node_objects(analysis: Any) -> list[Any]:
