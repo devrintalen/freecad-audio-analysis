@@ -736,6 +736,15 @@ it sounds like a missing midrange rather than like a wiring error — so the Tie
 compare the pair's order against the drivers' `Inverted` flags and say which way round they
 belong.
 
+That rule assumes the drivers themselves are flat and in phase across the crossover
+region, and real ones are not: a woofer far above its resonance and a tweeter only just
+above its own each add phase of their own, and the two rotations need not cancel.
+`examples/two_way_study.py` shows a plausible pair where the right answer is the opposite
+of the rule. So the finding is a **warning that prompts a comparison**, not a verdict — the
+rule is the correct default, an unconsidered polarity is nearly always a mistake, and the
+solve is what settles it. This is the general shape guidance in §6.8 should take: state the
+expectation, say why, and point at the experiment.
+
 **Reporting obligations.** Every lumped result carries the validity limit from §2.4.
 Curves are drawn beyond it only when marked — greyed, dashed, or cut off — because a
 confident-looking response plotted to 20 kHz from a model valid to 400 Hz is the single

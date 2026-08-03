@@ -207,8 +207,14 @@ class RunLumpedSolver(AudioCommand):
         solution = solver.Proxy.solve(solver, analysis)
         FreeCAD.Console.PrintMessage(f"Audio Analysis: {solver.Status}.\n")
 
+        from freecad.audio_analysis.checks import check_solution
         from freecad.audio_analysis.results.summary import summarise_solution
 
+        # Some findings only exist once there is an answer -- whether a diaphragm exceeds
+        # its linear travel depends on the drive level, not just on the model.
+        after = check_solution(solution, analysis)
+        if after.diagnostics:
+            FreeCAD.Console.PrintMessage(after.format() + "\n")
         FreeCAD.Console.PrintMessage(summarise_solution(solution, analysis) + "\n")
 
     def IsActive(self) -> bool:

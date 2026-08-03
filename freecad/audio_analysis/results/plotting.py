@@ -66,6 +66,37 @@ def plot_curves(
     return axis
 
 
+def plot_contributions(contributions: dict, *, show: bool = True, title: str = "") -> Any:
+    """Each driver's share of a node's pressure, with their sum.
+
+    The plot crossover work is done against. The sum is drawn heavy and the individual
+    drivers light, because the question being asked is where one hands over to the other
+    and whether the handover adds or cancels — and a cancellation shows up as the sum
+    dipping *below* both contributors, which is only visible when they are on one axis.
+    """
+    import matplotlib.pyplot as plt
+
+    figure, axis = plt.subplots(figsize=(10, 5.5))
+    for name, curve in contributions.items():
+        heavy = name == "sum"
+        axis.semilogx(
+            curve.frequency, curve.spl, label=name,
+            linewidth=2.4 if heavy else 1.2, color="black" if heavy else None,
+            zorder=3 if heavy else 2,
+        )
+    axis.set_xlabel("Frequency (Hz)")
+    axis.set_ylabel("SPL (dB re 20 µPa)")
+    axis.set_title(title or "Driver contributions")
+    axis.grid(True, which="both", alpha=0.25)
+    axis.legend(loc="best", fontsize=8)
+    _shade_invalid(axis, next(iter(contributions.values())))
+
+    figure.tight_layout()
+    if show:
+        plt.show()
+    return figure
+
+
 def plot_family(family: Any, *, show: bool = True, smoothing: int | None = None) -> Any:
     """Overlay a swept family, with a delta panel underneath.
 

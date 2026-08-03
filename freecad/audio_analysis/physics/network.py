@@ -25,6 +25,7 @@ few tens of nodes takes milliseconds, which is what makes parameter sweeps inter
 
 from __future__ import annotations
 
+import dataclasses
 import math
 from dataclasses import dataclass, field
 from typing import Iterable, Sequence
@@ -39,6 +40,11 @@ from freecad.audio_analysis.results.curve import ResponseCurve
 
 #: The reference node, at ambient pressure. Enclosed volumes and radiation terminate here.
 GROUND = "GROUND"
+
+
+def replace_label(curve: ResponseCurve, label: str) -> ResponseCurve:
+    """A copy of ``curve`` under a different name, for legends."""
+    return dataclasses.replace(curve, label=label)
 
 
 class Element:
@@ -657,6 +663,47 @@ class Network:
                 if node != GROUND:
                     counts[node] = counts.get(node, 0) + 1
         return sorted(node for node, count in counts.items() if count < 2)
+
+    def contributions(
+        self,
+        frequency: Sequence[float] | np.ndarray,
+        node: str,
+        *,
+        valid_below: float | None = None,
+    ) -> dict[str, ResponseCurve]:
+        """Each driver's share of the pressure at ``node``, plus their sum.
+
+        The plot crossover work is actually done against: which driver is carrying which
+        part of the band, and where they hand over (STRUCTURE.md §6.9).
+
+        Obtained by muting the other drivers' sources one at a time, **not** by deleting
+        them. Superposition applies to sources in a linear network but not to impedances:
+        a muted driver's diaphragm still moves and still loads the shared cavity, so
+        removing it entirely would give a different -- wrong -- decomposition, and would
+        reintroduce exactly the error §2.4 exists to avoid. The individual curves
+        therefore sum back to the full solve to numerical precision, which the tests
+        assert.
+        """
+        drivers = self.drivers
+        if not drivers:
+            raise ValueError("this network has no drivers to attribute pressure to")
+
+        original = [driver.voltage for driver in drivers]
+        curves: dict[str, ResponseCurve] = {}
+        try:
+            for index, driver in enumerate(drivers):
+                for other_index, other in enumerate(drivers):
+                    other.voltage = original[other_index] if other_index == index else 0.0
+                solution = self.solve(frequency, valid_below=valid_below)
+                curve = solution.pressure(node)
+                curves[driver.name] = replace_label(curve, driver.name)
+        finally:
+            for driver, voltage in zip(drivers, original):
+                driver.voltage = voltage
+
+        total = self.solve(frequency, valid_below=valid_below).pressure(node)
+        curves["sum"] = replace_label(total, "sum")
+        return curves
 
     def solve(
         self,

@@ -589,3 +589,82 @@ def test_no_result_is_nan_anywhere_in_a_dense_sweep(order):
     solution = solve_with(filter_, frequency)
     assert np.all(np.isfinite(solution.pressure("Ear").spl))
     assert np.all(np.isfinite(solution.input_impedance("D").magnitude))
+
+
+# ---------------------------------------------------------------------------------
+# Per-driver contributions
+# ---------------------------------------------------------------------------------
+
+
+def two_way_network(low_order=4, invert=False):
+    """Two *identical* drivers split by a complementary pair.
+
+    Identical so the two contributions are level-matched at the crossover frequency,
+    which is the only condition under which a polarity error produces a full null rather
+    than a partial dip. A real pair is never matched, and the dip is correspondingly
+    shallower -- which is exactly why it gets mistaken for a driver problem.
+    """
+    network = Network(air.AirProperties.at())
+    woofer = two_way_driver(
+        "Woofer", make_filter(response="Lowpass", alignment="Linkwitz-Riley",
+                              order=low_order, frequency=2000.0)
+    )
+    tweeter = two_way_driver(
+        "Tweeter", make_filter(response="Highpass", alignment="Linkwitz-Riley",
+                               order=low_order, frequency=2000.0),
+    )
+    if invert:
+        tweeter.polarity = -1
+    network.add(woofer)
+    network.add(tweeter)
+    network.add(Compliance("ear", 100e-6, "Ear"))
+    return network
+
+
+def test_contributions_sum_back_to_the_full_solve():
+    """Superposition of *sources* is exact; superposition of models is not.
+
+    Each contribution is taken with the other driver muted but still present, so its
+    diaphragm keeps loading the shared cavity. If it were deleted instead, these curves
+    would not add up -- which is the whole argument for solving the network at once.
+    """
+    frequency = np.logspace(1.3, 4.3, 300)
+    network = two_way_network()
+    parts = network.contributions(frequency, "Ear")
+    total = parts["Woofer"].values + parts["Tweeter"].values
+    assert np.allclose(total, parts["sum"].values, rtol=1e-9, atol=1e-12)
+
+
+def test_contributions_leave_the_network_unchanged():
+    frequency = np.array([1000.0])
+    network = two_way_network()
+    before = [d.voltage for d in network.drivers]
+    network.contributions(frequency, "Ear")
+    assert [d.voltage for d in network.drivers] == before
+
+
+def test_each_driver_dominates_its_own_band():
+    frequency = np.array([100.0, 2000.0, 15000.0])
+    parts = two_way_network().contributions(frequency, "Ear")
+    woofer, tweeter = parts["Woofer"].spl, parts["Tweeter"].spl
+    assert woofer[0] > tweeter[0] + 20.0
+    assert tweeter[2] > woofer[2] + 20.0
+
+
+def test_a_cancelling_pair_sums_below_both_contributors():
+    """The signature of a polarity error, and only visible with the parts on one axis."""
+    frequency = np.array([2000.0])
+    parts = two_way_network(low_order=2).contributions(frequency, "Ear")
+    assert parts["sum"].spl[0] < min(parts["Woofer"].spl[0], parts["Tweeter"].spl[0]) - 5.0
+
+    fixed = two_way_network(low_order=2, invert=True).contributions(frequency, "Ear")
+    assert fixed["sum"].spl[0] > max(fixed["Woofer"].spl[0], fixed["Tweeter"].spl[0])
+
+
+def test_contributions_need_a_driver():
+    network = Network(air.AirProperties.at())
+    network.add(Compliance("a", 1e-3, "X"))
+    network.add(Compliance("b", 1e-3, "X", "Y"))
+    network.add(Compliance("c", 1e-3, "Y"))
+    with pytest.raises(ValueError, match="no drivers"):
+        network.contributions(np.array([100.0]), "X")

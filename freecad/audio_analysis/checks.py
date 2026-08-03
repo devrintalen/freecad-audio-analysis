@@ -471,6 +471,14 @@ def check_crossover_polarity(analysis: Any) -> Iterator[Diagnostic]:
     phase. At LR2 it is half a turn and they cancel -- a deep notch exactly where both
     drivers are working hardest, which sounds like a missing midrange rather than like a
     wiring error.
+
+    **The rule assumes the drivers themselves are flat and in phase across the crossover
+    region, and real ones are not.** A woofer well above its resonance and a tweeter only
+    just above its own each contribute phase of their own, and the two rotations need not
+    cancel; ``examples/two_way_study.py`` shows a plausible pair where the right answer is
+    the opposite of the rule. So this is raised as a warning rather than an error: it is
+    the correct default and an unconsidered polarity is nearly always a mistake, but the
+    solve is what settles it, and the remedy says so.
     """
     from freecad.audio_analysis.objects.crossover import CrossoverFilter
 
@@ -502,20 +510,26 @@ def check_crossover_polarity(analysis: Any) -> Iterator[Diagnostic]:
     if branch_inverted == inversion_needed:
         return
 
+    settle = (
+        " Then solve it both ways and compare at the crossover frequency: the rule assumes "
+        "both drivers are flat and in phase there, and real ones are not, so the solve is "
+        "what settles it."
+    )
     if inversion_needed:
-        message = f"An LR{low.Order} pair needs one driver inverted, and none is."
-        remedy = f"Tick Inverted on one of {', '.join(d.Label for d in drivers)}."
+        message = f"An LR{low.Order} pair normally needs one driver inverted, and none is."
+        remedy = f"Try ticking Inverted on one of {', '.join(d.Label for d in drivers)}." + settle
         why = (
-            "At the crossover frequency the two branches are 180 degrees apart, so they "
-            "cancel instead of summing. Expect a deep notch right where both drivers are "
-            "contributing most."
+            "An Nth-order filter rotates the pair by N quarter-turns, so at this order the "
+            "two branches arrive 180 degrees apart and cancel instead of summing. Expect a "
+            "notch right where both drivers are contributing most -- deep if their levels "
+            "match there, a dull midrange if they do not."
         )
     else:
-        message = f"An LR{low.Order} pair sums in phase, but a driver is inverted."
-        remedy = "Untick Inverted, or check that the inversion is deliberate."
+        message = f"An LR{low.Order} pair normally sums in phase, but a driver is inverted."
+        remedy = "Try unticking Inverted, or confirm the inversion is deliberate." + settle
         why = (
-            "At this order the branches already arrive in phase, so reversing one turns "
-            "a flat sum into a cancellation."
+            "At this order the branches already arrive in phase, so reversing one turns a "
+            "flat sum into a cancellation."
         )
 
     yield Diagnostic(
@@ -613,6 +627,59 @@ def check_sweep_against_validity(analysis: Any) -> Iterator[Diagnostic]:
     yield report_lumped_validity(
         dimension, sweeps[0].Stop.getValueAs("Hz").Value, medium
     )
+
+
+def check_solution(solution: Any, analysis: Any = None) -> CheckReport:
+    """Findings that need a solved result rather than only a setup.
+
+    Not part of the registered pass, which runs *before* a solve. Excursion is the obvious
+    case: whether a diaphragm exceeds its linear travel is not a property of the model, it
+    is a property of the answer, and it depends on the drive level as much as on the design.
+    """
+    from freecad.audio_analysis.physics.network import Driver as PhysicsDriver
+
+    report = CheckReport()
+    for driver in solution.network.drivers:
+        if not isinstance(driver, PhysicsDriver):  # pragma: no cover -- defensive
+            continue
+        xmax = driver.parameters.Xmax
+        if xmax <= 0.0:
+            continue
+        try:
+            excursion = solution.excursion(driver.name).trusted()
+        except ValueError:
+            continue
+
+        peak = float(excursion.magnitude.max())
+        where = float(excursion.frequency[int(excursion.magnitude.argmax())])
+        fraction = peak / xmax
+        if fraction <= 1.0:
+            continue
+
+        report.diagnostics.append(
+            Diagnostic(
+                severity=Severity.WARNING,
+                code="excursion-exceeds-xmax",
+                message=(
+                    f"Peak excursion is {peak * 1000:.2f} mm at {where:.0f} Hz, "
+                    f"{fraction * 100:.0f}% of Xmax."
+                ),
+                why=(
+                    "Beyond Xmax the motor's force factor and the suspension's stiffness "
+                    "both stop being constant, so the driver distorts. Every result here "
+                    "is a small-signal one and will keep reporting a clean response no "
+                    "matter how far past the limit it goes -- the model has no way to "
+                    "represent the distortion it is predicting."
+                ),
+                remedy=(
+                    f"Lower the drive voltage, or reduce output below {where:.0f} Hz with "
+                    f"a high-pass. Nonlinear behaviour is Tier 5."
+                ),
+                reference="STRUCTURE.md §6.9",
+                subject=driver.name,
+            )
+        )
+    return report
 
 
 def report_lumped_validity(
