@@ -263,22 +263,42 @@ def l_pad(attenuation_db: float, impedance: float) -> list[Component]:
 
 
 class Filter:
-    """What a crossover branch does to the drive reaching one voice coil."""
+    """What a crossover branch does to the drive reaching one voice coil.
 
-    def thevenin(
+    **Why not a Thevenin equivalent.** The obvious interface is an open-circuit voltage
+    and an output impedance, and it is wrong. A lossless LC ladder has *infinite*
+    open-circuit gain at its own resonance -- with nothing loading it, the tank rings
+    without limit -- and for a second-order crossover that resonance sits exactly at the
+    crossover frequency, which is the one frequency a user is guaranteed to put in their
+    sweep. Both the open-circuit voltage and the output impedance diverge there while
+    every physical quantity stays finite, so the singularity is removable but only if it
+    is never formed.
+
+    So a filter instead reports three coefficients ``(gain, alpha, beta)`` giving the coil
+    current directly:
+
+        ``i = (V_amp * gain - alpha * emf) / (alpha * Zc + beta)``
+
+    with ``Zc`` the blocked coil impedance and ``emf`` the back-EMF the moving cone
+    generates. Dividing through by ``alpha`` recovers the Thevenin form -- open-circuit
+    voltage ``V*gain/alpha``, output impedance ``beta/alpha`` -- which is exactly the
+    division that must not happen.
+    """
+
+    def terminal_coefficients(
         self, omega: np.ndarray, source_impedance: float
-    ) -> tuple[np.ndarray, np.ndarray]:
-        """``(gain, output_impedance)`` at the voice coil terminals.
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """``(gain, alpha, beta)`` for the coil-current relation above.
 
-        ``gain`` multiplies the amplifier voltage to give the open-circuit terminal
-        voltage; ``output_impedance`` is what the coil sees looking back. Together they
-        are the Thevenin equivalent of everything upstream, and because they are
-        independent of the driver they can be computed before the acoustic solve.
+        Independent of the driver, so computable before the acoustic solve -- which is
+        what keeps a crossover from making the problem circular.
         """
         raise NotImplementedError
 
-    def input_impedance(self, coil_impedance: np.ndarray, omega: np.ndarray) -> np.ndarray:
-        """Impedance at the amplifier terminals, given what the coil presents."""
+    def amplifier_impedance(
+        self, terminal_voltage: np.ndarray, coil_current: np.ndarray, omega: np.ndarray
+    ) -> np.ndarray:
+        """Impedance at the amplifier terminals, from the solved coil quantities."""
         raise NotImplementedError
 
     def describe(self) -> str:
@@ -320,14 +340,19 @@ class IdealFilter(Filter):
         shape = ideal_transfer(self.alignment, self.order, self.response, s)
         return shape * 10.0 ** (self.gain_db / 20.0) * np.exp(-1j * omega * self.delay)
 
-    def thevenin(
+    def terminal_coefficients(
         self, omega: np.ndarray, source_impedance: float
-    ) -> tuple[np.ndarray, np.ndarray]:
-        return self.transfer(omega), np.full(omega.shape, source_impedance, dtype=complex)
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        # The filter is realised perfectly and the driver is damped by its own power
+        # amplifier, so the transfer function is a plain gain and nothing can diverge.
+        ones = np.ones(omega.shape, dtype=complex)
+        return self.transfer(omega), ones, source_impedance * ones
 
-    def input_impedance(self, coil_impedance: np.ndarray, omega: np.ndarray) -> np.ndarray:
+    def amplifier_impedance(
+        self, terminal_voltage: np.ndarray, coil_current: np.ndarray, omega: np.ndarray
+    ) -> np.ndarray:
         # Each driver has its own amplifier, so the load is the coil itself.
-        return coil_impedance
+        return terminal_voltage / coil_current
 
     def describe(self) -> str:
         if self.response == "Bypass":
@@ -351,11 +376,13 @@ class PassiveLadder(Filter):
 
     Held as a cascade of two-port ABCD matrices, which is what makes the loaded response
     fall out without assuming anything about the load. For the chain matrix
-    ``[[A, B], [C, D]]`` and an amplifier of output impedance ``Zs``:
+    ``[[A, B], [C, D]]`` and an amplifier of output impedance ``Zs``, the coefficients of
+    :meth:`Filter.terminal_coefficients` are
 
-        open-circuit gain   ``1 / (A + Zs C)``
-        output impedance    ``(D Zs + B) / (C Zs + A)``
-        input impedance     ``(A Z + B) / (C Z + D)``  for a load ``Z``
+        ``gain = 1``,   ``alpha = A + Zs C``,   ``beta = B + Zs D``
+
+    and the amplifier sees ``(A V2 + B I2) / (C V2 + D I2)``. Written this way nothing
+    diverges at the ladder's own resonance, where ``alpha`` passes through zero.
 
     An empty component list is the identity matrix, so a bypassed passive branch reduces
     to a direct connection rather than being a special case.
@@ -377,17 +404,23 @@ class PassiveLadder(Filter):
             A, B, C, D = A * a + B * c, A * b + B * d, C * a + D * c, C * b + D * d
         return A, B, C, D
 
-    def thevenin(
+    def terminal_coefficients(
         self, omega: np.ndarray, source_impedance: float
-    ) -> tuple[np.ndarray, np.ndarray]:
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         A, B, C, D = self.abcd(omega)
-        return 1.0 / (A + source_impedance * C), (D * source_impedance + B) / (
-            C * source_impedance + A
+        return (
+            np.ones(omega.shape, dtype=complex),
+            A + source_impedance * C,
+            B + source_impedance * D,
         )
 
-    def input_impedance(self, coil_impedance: np.ndarray, omega: np.ndarray) -> np.ndarray:
+    def amplifier_impedance(
+        self, terminal_voltage: np.ndarray, coil_current: np.ndarray, omega: np.ndarray
+    ) -> np.ndarray:
         A, B, C, D = self.abcd(omega)
-        return (A * coil_impedance + B) / (C * coil_impedance + D)
+        return (A * terminal_voltage + B * coil_current) / (
+            C * terminal_voltage + D * coil_current
+        )
 
     def describe(self) -> str:
         if not self.components:
@@ -420,14 +453,17 @@ def make_filter(
     return PassiveLadder(components)
 
 
-def summing_response(filters: Sequence[Filter], omega: np.ndarray, source_impedance: float = 0.0):
-    """Open-circuit gains of several branches summed complexly.
+def summing_response(filters: Sequence[Filter], omega: np.ndarray, load: float = 8.0):
+    """Voltage transfers of several branches into a resistive ``load``, summed complexly.
 
-    A quick way to see whether a pair of filters actually sums flat before any driver is
-    involved. The real system response is the acoustic sum from the solve; this is the
-    electrical half of it, isolated.
+    A quick way to see whether a pair of filters sums flat before any driver is involved.
+    The real system response is the acoustic sum from the solve; this is the electrical
+    half of it, isolated -- and into a resistor, which is the condition the alignment was
+    designed for and not the condition a driver provides.
     """
     total = np.zeros(omega.shape, dtype=complex)
     for filter_ in filters:
-        total = total + filter_.thevenin(omega, source_impedance)[0]
+        gain, alpha, beta = filter_.terminal_coefficients(omega, 0.0)
+        # Into a pure resistance the coil "emf" is zero, so v_load = load * i.
+        total = total + gain * load / (alpha * load + beta)
     return total

@@ -111,10 +111,18 @@ them, and the workbench installs and runs without them.
 ## Development
 
 ```bash
-python3 -m pytest tests/ -q
+python3 -m pytest tests/ -q      # unit and integration tests
+python3 validation/run.py        # benchmarks, with tolerances, as a report
 ```
 
-The suite splits in two. The pure-physics and unit tests run in any interpreter. The
+**Benchmarks are separate from tests.** A test asks whether the code does what its author
+meant; a benchmark asks whether what the author meant is *true*, against an answer obtained
+some other way — a closed-form alignment, analytic radiation impedance, or ngspice on the
+same netlist. Tier 1 agrees with theory to better than 0.03% and with ngspice to about
+3 parts per million. See [validation/README.md](validation/README.md), including what is
+still missing: nothing here has been compared against a physical measurement.
+
+The test suite splits in two. The pure-physics and unit tests run in any interpreter. The
 integration tests need FreeCAD's bindings, which `tests/conftest.py` locates
 automatically; they skip if it cannot find them.
 

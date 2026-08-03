@@ -86,7 +86,10 @@ class TestProperties:
         assert str(branch.Response) == "Bypass"
         filter_ = branch.Proxy.filter(branch)
         omega = np.array([100.0, 10000.0])
-        assert np.allclose(filter_.thevenin(omega, 0.0)[0], 1.0)
+        gain, alpha, beta = filter_.terminal_coefficients(omega, 0.0)
+        assert np.allclose(gain, 1.0)
+        assert np.allclose(alpha, 1.0)
+        assert np.allclose(beta, 0.0)
 
     def test_frequency_is_read_in_hertz(self, doc):
         branch = make_crossover(doc)
@@ -211,8 +214,8 @@ class TestBuilder:
 
         network, _ = build_network(two_way)
         omega = np.array([2.0 * np.pi * 300.0])
-        padded = network.element(tweeter.Name).drive(omega)[0]
-        direct = network.element(woofer.Name).drive(omega)[0]
+        padded = network.element(tweeter.Name).coefficients(omega)[0]
+        direct = network.element(woofer.Name).coefficients(omega)[0]
         assert 20.0 * np.log10(np.abs(padded / direct))[0] == pytest.approx(-6.0, abs=1e-9)
 
     def test_padding_a_shared_driver_moves_its_output_by_less_than_the_pad(self, doc, two_way):

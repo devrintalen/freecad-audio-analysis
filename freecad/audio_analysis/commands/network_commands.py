@@ -103,6 +103,16 @@ class AddLeak(_AddToAnalysis):
     factory = staticmethod(no.make_leak)
 
 
+class AddPassiveRadiator(_AddToAnalysis):
+    Name, object_name, IconName = "AddPassiveRadiator", "PassiveRadiator", "Driver"
+    MenuText = "Add passive radiator"
+    ToolTip = (
+        "Add a driverless diaphragm: mass and compliance, no motor. Used where a port "
+        "would have to be impractically long, which in a shallow enclosure is usual."
+    )
+    factory = staticmethod(no.make_passive_radiator)
+
+
 class AddRadiation(_AddToAnalysis):
     Name, object_name, IconName = "AddRadiation", "Radiation", "Radiation"
     MenuText = "Add radiation"
@@ -550,7 +560,8 @@ class NewFromTemplate(AudioCommand):
 
 GEOMETRY_COMMANDS = (ExtractCavity, VolumeFromCavity)
 MODEL_COMMANDS = (
-    AddVolume, AddNode, AddDriver, AddCrossover, AddPort, AddResistance, AddLeak, AddRadiation,
+    AddVolume, AddNode, AddDriver, AddCrossover, AddPort, AddResistance, AddLeak,
+    AddPassiveRadiator, AddRadiation,
 )
 SOLVE_COMMANDS = (
     AddFrequencySweep, AddLumpedSolver, RunLumpedSolver, PlotResults,

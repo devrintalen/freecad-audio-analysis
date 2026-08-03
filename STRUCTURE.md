@@ -711,6 +711,15 @@ Two realisations, and the difference is not cosmetic:
   a real driver can peak more than 10 dB above what its transfer function alone predicts —
   which is why real passive crossovers need impedance compensation.
 
+A filter reports three coefficients rather than a Thévenin voltage and impedance, and the
+reason is worth recording. A lossless L/C ladder has *infinite* open-circuit gain at its
+own resonance, and for a second-order crossover that resonance sits exactly at the
+crossover frequency — the one frequency a user is certain to have in their sweep, because
+it is the round number they typed. The Thévenin voltage and output impedance both diverge
+there while every physical quantity stays finite. So the coil current is written directly
+as `i = (V·gain − α·emf)/(α·Zc + β)`; dividing through by `α` recovers the Thévenin form,
+and that is precisely the division that must never happen.
+
 **One amplifier, several branches.** Each branch carries an independent filter. That is
 exact as long as the amplifier's output impedance is zero, since it then holds the common
 node at a fixed voltage regardless of what the other branch draws — true to a fraction of

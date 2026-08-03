@@ -309,35 +309,52 @@ class Driver(Element):
     def back_node(self) -> str:
         return self.node_b
 
-    def drive(self, omega: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        """``(terminal voltage, impedance looking back)`` at the voice coil.
+    def coefficients(self, omega: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """``(gain, alpha, beta)`` describing everything electrical ahead of the coil.
 
-        The Thévenin equivalent of the amplifier and any crossover ahead of it. Both are
-        independent of the driver, so this is computable before the acoustic solve — which
-        is what keeps a crossover from making the problem circular.
+        The coil current is ``(V*gain - alpha*emf) / (alpha*Zc + beta)``. See
+        :class:`~freecad.audio_analysis.physics.crossover.Filter` for why this rather than
+        a Thévenin voltage and impedance: a lossless ladder's open-circuit gain is infinite
+        at its own resonance, which for a second-order crossover is precisely the crossover
+        frequency.
         """
+        ones = np.ones(np.shape(omega), dtype=complex)
         if self.filter is None:
-            ones = np.ones(np.shape(omega), dtype=complex)
-            return self.voltage * ones, self.source_impedance * ones
-        gain, back = self.filter.thevenin(omega, self.source_impedance)
-        return self.voltage * gain, back
+            return ones, ones, self.source_impedance * ones
+        return self.filter.terminal_coefficients(omega, self.source_impedance)
+
+    def blocked_impedance(self, omega: np.ndarray) -> np.ndarray:
+        """Voice coil impedance with the cone held still: ``Re + j w Le``."""
+        p = self.parameters
+        return p.Re + 1j * omega * p.Le
 
     def electrical_impedance(self, omega: np.ndarray) -> np.ndarray:
-        """Voice coil impedance plus whatever the coil sees looking back."""
-        p = self.parameters
-        return p.Re + 1j * omega * p.Le + self.drive(omega)[1]
+        """Blocked coil impedance plus whatever the coil sees looking back.
+
+        Undefined where a lossless filter's ``alpha`` passes through zero, so the solve
+        does not use it; kept because it is the natural thing to ask for and is finite
+        for every filter a real amplifier would present.
+        """
+        _, alpha, beta = self.coefficients(omega)
+        return self.blocked_impedance(omega) + beta / alpha
 
     def impedance(self, omega: np.ndarray, medium: air.AirProperties) -> np.ndarray:
         p = self.parameters
+        _, alpha, beta = self.coefficients(omega)
         mechanical = (1j * omega * p.Mms + p.Rms + 1.0 / (1j * omega * p.Cms)) / p.Sd**2
-        electrical = p.BL**2 / (p.Sd**2 * self.electrical_impedance(omega))
+        # The motor's electrical damping, reflected into the acoustical domain. Written
+        # as alpha/(alpha*Zc + beta) rather than 1/Ze so it stays finite at alpha = 0,
+        # where it correctly goes to zero: the coil is then effectively open.
+        loop = alpha * self.blocked_impedance(omega) + beta
+        electrical = alpha * p.BL**2 / (p.Sd**2 * loop)
         return mechanical + electrical
 
     def open_circuit_pressure(self, omega: np.ndarray) -> np.ndarray:
         """The Thévenin pressure the motor develops, before acoustic loading."""
         p = self.parameters
-        terminal = self.drive(omega)[0]
-        return self.polarity * p.BL * terminal / (self.electrical_impedance(omega) * p.Sd)
+        gain, alpha, beta = self.coefficients(omega)
+        loop = alpha * self.blocked_impedance(omega) + beta
+        return self.polarity * p.BL * self.voltage * gain / (p.Sd * loop)
 
     def source(self, omega: np.ndarray, medium: air.AirProperties) -> np.ndarray:
         return self.open_circuit_pressure(omega) / self.impedance(omega, medium)
@@ -495,27 +512,60 @@ class Solution:
                       "space": "half" if half_space else "full"},
         )
 
-    def _branch_impedance(self, driver_name: str) -> np.ndarray:
-        """Load impedance of one driver branch as the amplifier sees it, ohms."""
+    def _electrical(self, driver_name: str) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """``(coil current, voltage across the coil, impedance at the amplifier)``.
+
+        Everything electrical about one driver branch, derived once. The cone's velocity
+        comes from the acoustic solve, so this is where the two domains meet.
+        """
         driver = self.network.element(driver_name)
         if not isinstance(driver, Driver):
             raise TypeError(f"{driver_name} is not a Driver")
         p = driver.parameters
         omega = self.omega
-        terminal, looking_back = driver.drive(omega)
-        coil = p.Re + 1j * omega * p.Le
+        gain, alpha, beta = driver.coefficients(omega)
+        coil = driver.blocked_impedance(omega)
         velocity = self.volume_velocity(driver_name).values / p.Sd
         # Polarity flips both BL and the resulting velocity, so their product -- and hence
         # the impedance -- is unchanged. Reversing a driver's wiring must not alter the
         # load the amplifier sees.
         back_emf = driver.polarity * p.BL * velocity
-        current = (terminal - back_emf) / (coil + looking_back)
-        # At the coil terminals the driver looks like its own blocked impedance plus the
-        # motional impedance the back-EMF represents.
-        coil_impedance = coil + back_emf / current
-        if driver.filter is None:
-            return coil_impedance
-        return driver.filter.input_impedance(coil_impedance, omega)
+        current = (driver.voltage * gain - alpha * back_emf) / (alpha * coil + beta)
+        # At the terminals the driver is its blocked impedance in series with the voltage
+        # the moving cone generates.
+        terminal = coil * current + back_emf
+        at_amplifier = (
+            terminal / current
+            if driver.filter is None
+            else driver.filter.amplifier_impedance(terminal, current, omega)
+        )
+        return current, terminal, at_amplifier
+
+    def _branch_impedance(self, driver_name: str) -> np.ndarray:
+        """Load impedance of one driver branch as the amplifier sees it, ohms."""
+        return self._electrical(driver_name)[2]
+
+    def terminal_voltage(self, driver_name: str) -> ResponseCurve:
+        """Voltage actually across the voice coil, volts.
+
+        Equal to the drive voltage when there is no crossover and no amplifier output
+        impedance. With a passive filter it is neither the amplifier's voltage nor the
+        filter's nominal response, because the driver's own impedance is part of the
+        divider -- which is the quantity a meter on the driver terminals would read.
+        """
+        return ResponseCurve(
+            self.frequency, self._electrical(driver_name)[1], quantity="voltage", unit="V",
+            label=f"{driver_name} terminal voltage", valid_below=self.valid_below,
+            metadata=self._metadata(),
+        )
+
+    def coil_current(self, driver_name: str) -> ResponseCurve:
+        """Current through the voice coil, amps."""
+        return ResponseCurve(
+            self.frequency, self._electrical(driver_name)[0], quantity="current", unit="A",
+            label=f"{driver_name} coil current", valid_below=self.valid_below,
+            metadata=self._metadata(),
+        )
 
     def input_impedance(self, driver_name: str) -> ResponseCurve:
         """Electrical impedance the amplifier sees looking into this branch, ohms.

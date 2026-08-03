@@ -38,6 +38,24 @@ def db(values) -> np.ndarray:
     return 20.0 * np.log10(np.abs(values))
 
 
+def thevenin(filter_, omega, source_impedance=0.0):
+    """The open-circuit voltage gain and output impedance, for tests that want them.
+
+    Deliberately *not* part of the Filter interface: this division is the one that
+    diverges at a lossless ladder's own resonance. It is fine here because these tests
+    stay away from that frequency, and it keeps them readable.
+    """
+    gain, alpha, beta = filter_.terminal_coefficients(omega, source_impedance)
+    return gain / alpha, beta / alpha
+
+
+def loaded_input_impedance(filter_, load, omega):
+    """What the amplifier sees with a resistive ``load`` on the filter's output."""
+    gain, alpha, beta = filter_.terminal_coefficients(omega, 0.0)
+    current = gain / (alpha * load + beta)
+    return filter_.amplifier_impedance(load * current, current, omega)
+
+
 # ---------------------------------------------------------------------------------
 # Prototypes
 # ---------------------------------------------------------------------------------
@@ -236,8 +254,7 @@ def test_l_pad_holds_the_filter_side_impedance_constant():
     the crossover point as well as the level."""
     load = 8.0
     omega = np.array([2.0 * math.pi * 1000.0])
-    ladder = PassiveLadder(l_pad(-10.0, load))
-    seen = ladder.input_impedance(np.array([load + 0j]), omega)
+    seen = loaded_input_impedance(PassiveLadder(l_pad(-10.0, load)), load, omega)
     assert seen[0].real == pytest.approx(load)
     assert seen[0].imag == pytest.approx(0.0)
 
@@ -255,7 +272,7 @@ def test_l_pad_is_empty_for_gain():
 def test_ideal_filter_applies_gain_and_delay():
     omega = np.array([2.0 * math.pi * 1000.0])
     filter_ = IdealFilter("Bypass", gain_db=-6.0, delay=250e-6)
-    gain, back = filter_.thevenin(omega, 0.0)
+    gain, back = thevenin(filter_, omega)
     assert db(gain)[0] == pytest.approx(-6.0)
     # 250 us at 1 kHz is a quarter period, so a quarter turn of phase.
     assert np.angle(gain)[0] == pytest.approx(-math.pi / 2, abs=1e-9)
@@ -264,19 +281,21 @@ def test_ideal_filter_applies_gain_and_delay():
 
 def test_ideal_filter_passes_the_amplifier_impedance_through():
     omega = np.array([1000.0])
-    _, back = IdealFilter("Lowpass", order=2, frequency=500.0).thevenin(omega, 0.5)
+    _, back = thevenin(IdealFilter("Lowpass", order=2, frequency=500.0), omega, 0.5)
     assert back[0] == pytest.approx(0.5)
 
 
 def test_ideal_filter_amplifier_sees_the_driver_directly():
     omega = np.array([1000.0])
     coil = np.array([32.0 + 5.0j])
-    assert IdealFilter("Lowpass").input_impedance(coil, omega)[0] == coil[0]
+    current = np.array([0.5 + 0.1j])
+    seen = IdealFilter("Lowpass").amplifier_impedance(coil * current, current, omega)
+    assert seen[0] == pytest.approx(coil[0])
 
 
 def test_empty_passive_ladder_is_a_direct_connection():
     omega = np.array([1000.0, 5000.0])
-    gain, back = PassiveLadder([]).thevenin(omega, 1.5)
+    gain, back = thevenin(PassiveLadder([]), omega, 1.5)
     assert np.allclose(gain, 1.0)
     assert np.allclose(back, 1.5)
 
@@ -290,7 +309,7 @@ def test_passive_ladder_output_impedance_is_the_shorted_source_impedance():
     capacitance = components[1].value
 
     omega = np.array([2.0 * math.pi * 300.0])
-    _, back = PassiveLadder(components).thevenin(omega, 0.0)
+    _, back = thevenin(PassiveLadder(components), omega)
     z_l = 1j * omega * inductance
     z_c = 1.0 / (1j * omega * capacitance)
     assert back[0] == pytest.approx((z_l * z_c / (z_l + z_c))[0])
@@ -302,7 +321,7 @@ def test_passive_ladder_input_impedance_rises_out_of_band():
     power."""
     components = synthesise("Butterworth", 2, "Lowpass", 1000.0, 8.0)
     omega = 2.0 * math.pi * np.array([100.0, 20000.0])
-    seen = np.abs(PassiveLadder(components).input_impedance(np.full(2, 8.0 + 0j), omega))
+    seen = np.abs(loaded_input_impedance(PassiveLadder(components), 8.0, omega))
     assert seen[0] == pytest.approx(8.0, rel=0.05)
     assert seen[1] > 100.0
 
@@ -480,3 +499,93 @@ def test_component_describe_covers_every_kind():
     assert "mH" in Component("L", "series", 1e-3).describe()
     assert "uF" in Component("C", "shunt", 1e-6).describe()
     assert "ohm" in Component("R", "series", 4.0).describe()
+
+
+# ---------------------------------------------------------------------------------
+# Terminal quantities
+# ---------------------------------------------------------------------------------
+
+
+def test_terminal_voltage_is_the_drive_voltage_with_no_filter():
+    """With nothing between the amplifier and the coil, they are the same thing."""
+    frequency = np.logspace(1, 4, 50)
+    solution = solve_with(None, frequency)
+    assert np.allclose(solution.terminal_voltage("D").values, 0.1)
+
+
+def test_terminal_voltage_is_neither_the_amplifier_nor_the_nominal_response():
+    """A passive filter puts the driver's own impedance into the divider.
+
+    So the voltage at the terminals is not the amplifier's, and it is not the filter's
+    nominal transfer function either -- it is what a meter across the driver would read.
+    """
+    frequency = np.array([2000.0])
+    filter_ = make_filter(
+        response="Lowpass", order=2, frequency=1000.0, passive=True, impedance=32.0
+    )
+    solution = solve_with(filter_, frequency)
+    measured = abs(solution.terminal_voltage("D").values[0])
+    nominal = abs(thevenin(filter_, 2.0 * math.pi * frequency)[0][0]) * 0.1
+
+    assert measured != pytest.approx(0.1)
+    assert measured != pytest.approx(nominal, rel=0.01)
+
+
+def test_ohms_law_holds_at_the_terminals():
+    frequency = np.logspace(1, 4, 40)
+    filter_ = make_filter(
+        response="Lowpass", order=2, frequency=1000.0, passive=True, impedance=32.0
+    )
+    solution = solve_with(filter_, frequency)
+    voltage = solution.terminal_voltage("D").values
+    current = solution.coil_current("D").values
+    p = two_way_driver("D").parameters
+    coil = p.Re + 1j * 2.0 * math.pi * frequency * p.Le
+    # V/I at the coil is the blocked impedance plus the motional part, so it is not the
+    # blocked impedance alone -- but it must exceed it in magnitude at resonance.
+    at_resonance = np.argmin(np.abs(frequency - 60.0))
+    assert abs(voltage[at_resonance] / current[at_resonance]) > abs(coil[at_resonance])
+
+
+def test_a_lossless_ladder_stays_finite_at_its_own_resonance():
+    """The reason filters report coefficients rather than a Thevenin equivalent.
+
+    A second-order passive crossover's LC tank resonates at exactly the crossover
+    frequency, where the *open-circuit* gain of a lossless ladder is infinite. A user's
+    sweep will land on that frequency sooner or later -- it is a round number they typed
+    -- and every derived curve would come back NaN from that one point onward.
+    """
+    corner = 1000.0
+    filter_ = make_filter(
+        response="Lowpass", order=2, frequency=corner, passive=True, impedance=32.0
+    )
+    omega = np.array([2.0 * math.pi * corner])
+
+    # The Thevenin form really does diverge here; that is not a bug in the filter.
+    gain, alpha, beta = filter_.terminal_coefficients(omega, 0.0)
+    assert abs(alpha[0]) < 1e-9
+
+    # Everything the solve actually uses stays finite.
+    frequency = np.array([corner * 0.9, corner, corner * 1.1])
+    solution = solve_with(filter_, frequency)
+    for values in (
+        solution.pressure("Ear").values,
+        solution.input_impedance("D").values,
+        solution.terminal_voltage("D").values,
+        solution.coil_current("D").values,
+        solution.excursion("D").values,
+    ):
+        assert np.all(np.isfinite(values))
+
+
+@pytest.mark.parametrize("order", [2, 4])
+def test_no_result_is_nan_anywhere_in_a_dense_sweep(order):
+    """A sweep dense enough to land near every ladder resonance."""
+    filter_ = make_filter(
+        response="Lowpass", order=order, frequency=1000.0, passive=True, impedance=32.0
+    )
+    frequency = np.concatenate([np.logspace(1, 4.3, 500), [1000.0, 2000.0, 500.0]])
+    frequency = np.unique(frequency)
+    solution = solve_with(filter_, frequency)
+    assert np.all(np.isfinite(solution.pressure("Ear").spl))
+    assert np.all(np.isfinite(solution.input_impedance("D").magnitude))
