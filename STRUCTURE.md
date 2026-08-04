@@ -746,6 +746,18 @@ seventeenth, and no `try`/`except` catches that. The outline is therefore enlarg
 unlike `transformGeometry`, leaves a circle a circle instead of re-approximating it as a
 spline and losing a fraction of a percent of its area.
 
+**References into an assembly must be XLinks, and must not be resolved.** Two separate
+traps, both hit on the first real use. `App::PropertyLinkSubList` refuses an object it does
+not own — *"does not support external object"* — and in an assembly every part is an
+`App::Link` into another document, so that property type can never hold a reference the
+user actually picks. It has to be `App::PropertyXLinkSubList`. Separately,
+`Gui.Selection.getSelectionEx()` defaults to `resolve=1`, which walks the pick down to the
+body that owns the edge, in its own document, reported as a bare `"Edge148"`. That discards
+the assembly transform, so anything built from it lands where the part was *modelled*
+rather than where it sits in the product. Commands taking sub-element picks use
+`getSelectionEx("", 0)` and keep the full `Body004.PolarPattern001.Edge148` path, which
+`resolve_reference` walks with `getSubObject` and the assembly transform applied.
+
 **Measured on the driver_cup cup.** Enumerating the inner wires of `Body004` finds 25
 mouths: the ear-side rim (79.2 cm², a 16-edge planar loop), 8 vent slots of 177.2 mm² each
 seen from both ends, and 8 screw holes. Capping one mouth per opening and extracting against

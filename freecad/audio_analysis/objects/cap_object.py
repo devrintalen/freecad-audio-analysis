@@ -41,7 +41,12 @@ class AcousticCap(AudioObject):
     def properties(self) -> Iterable[PropertySpec]:
         return (
             PropertySpec(
-                "App::PropertyLinkSubList", "Opening", "Cap",
+                # XLink, not Link: in an assembly the parts are App::Links into separate
+                # documents, and a plain PropertyLinkSubList refuses an object it does not
+                # own with "does not support external object". Every reference this
+                # workbench takes on a real assembly is external, so Link is simply the
+                # wrong property here.
+                "App::PropertyXLinkSubList", "Opening", "Cap",
                 "One edge on the rim of the opening -- the rest of the loop is found "
                 "from it. A face works too, and several edges cap several openings.",
             ),

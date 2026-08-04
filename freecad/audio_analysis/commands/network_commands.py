@@ -12,6 +12,28 @@ from freecad.audio_analysis.objects import network_objects as no
 from freecad.audio_analysis.objects.base import is_audio_object
 
 
+def _unresolved_selection() -> list[Any]:
+    """The selection with sub-element paths left intact, not resolved into the part.
+
+    ``getSelectionEx()`` defaults to ``resolve=1``, which walks a pick inside an assembly
+    all the way down to the object that actually owns the face or edge -- typically a body
+    in a *different* document, reported with a bare ``"Edge148"``. That throws away the
+    assembly context: the sub-shape then comes back in the part's own frame rather than the
+    assembled one, and anything built from it lands wherever the part was modelled instead
+    of where it sits in the product.
+
+    ``resolve=0`` keeps the top-level object in the active document together with the full
+    ``"Body004.PolarPattern001.Edge148"`` path, which ``capping.resolve_reference`` resolves
+    through ``getSubObject`` with the assembly transform applied.
+    """
+    import FreeCADGui
+
+    try:
+        return FreeCADGui.Selection.getSelectionEx("", 0)
+    except (TypeError, AttributeError):  # older signature; still better than nothing
+        return FreeCADGui.Selection.getSelectionEx()
+
+
 def _selected_of_type(type_name: str) -> list[Any]:
     """Selected objects of one Audio type, or an empty list when there is no GUI."""
     try:
@@ -499,7 +521,7 @@ class CapOpening(AudioCommand):
 
         references = [
             (selected.Object, tuple(selected.SubElementNames))
-            for selected in FreeCADGui.Selection.getSelectionEx()
+            for selected in _unresolved_selection()
             if selected.SubElementNames
         ]
         if not references:
@@ -526,10 +548,8 @@ class CapOpening(AudioCommand):
 
     def IsActive(self) -> bool:
         try:
-            import FreeCADGui
-
             return FreeCAD.ActiveDocument is not None and any(
-                s.SubElementNames for s in FreeCADGui.Selection.getSelectionEx()
+                s.SubElementNames for s in _unresolved_selection()
             )
         except (ImportError, AttributeError):
             return False

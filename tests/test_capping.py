@@ -57,7 +57,7 @@ def hollow_box(outer=BOX, wall=WALL):
     )
 
 
-def bored(doc, name="Shell", holes=((BOX / 2, BOX / 2),), radius=HOLE_RADIUS):
+def bored_shape(holes=((BOX / 2, BOX / 2),), radius=HOLE_RADIUS):
     """The shell with round holes bored through its **top** wall (+Z).
 
     Piercing one wall only: a bore straight through the model would open two faces at
@@ -67,11 +67,16 @@ def bored(doc, name="Shell", holes=((BOX / 2, BOX / 2),), radius=HOLE_RADIUS):
     for x, y in holes:
         shape = shape.cut(
             Part.makeCylinder(
-                radius, wall_pierce := WALL * 3, FreeCAD.Vector(x, y, BOX - WALL * 1.5)
+                radius, WALL * 3, FreeCAD.Vector(x, y, BOX - WALL * 1.5)
             )
         )
+    return shape
+
+
+def bored(doc, name="Shell", holes=((BOX / 2, BOX / 2),), radius=HOLE_RADIUS):
+    """:func:`bored_shape` as a document object."""
     obj = doc.addObject("Part::Feature", name)
-    obj.Shape = shape
+    obj.Shape = bored_shape(holes, radius)
     doc.recompute()
     return obj
 
@@ -358,6 +363,74 @@ class TestReferences:
             openings_from_references(
                 [(shell, tuple(f"Edge{i}" for i in rim))], propagate=False
             )
+
+
+class TestAssembliesAndExternalDocuments:
+    """The case a real model is always in: parts are links into other documents.
+
+    Both halves of this bit the driver_cup model. ``PropertyLinkSubList`` refuses an
+    external object outright, and resolving a pick down to the part that owns the edge
+    throws away the assembly transform.
+    """
+
+    @pytest.fixture
+    def linked(self, doc, tmp_path):
+        """A shell in its own document, linked into ``doc`` and moved 100 mm away.
+
+        Both documents have to exist on disk: FreeCAD refuses to create a cross-document
+        link unless the linked *and* the owning document have been saved, since the link
+        is stored as a file reference. That is also why every part in a real assembly is
+        external, and why the reference has to be an XLink.
+        """
+        source = FreeCAD.newDocument("capping_source")
+        part = source.addObject("Part::Feature", "Shell")
+        part.Shape = bored_shape()
+        source.recompute()
+        source.saveAs(str(tmp_path / "capping_source.FCStd"))
+        doc.saveAs(str(tmp_path / "capping_main.FCStd"))
+
+        link = doc.addObject("App::Link", "CupLink")
+        link.LinkedObject = part
+        link.Placement = FreeCAD.Placement(
+            FreeCAD.Vector(100.0, 0.0, 0.0), FreeCAD.Rotation()
+        )
+        doc.recompute()
+        yield link, part
+        if "capping_source" in FreeCAD.listDocuments():
+            FreeCAD.closeDocument("capping_source")
+
+    def test_the_opening_property_accepts_an_external_object(self, doc, linked):
+        _, part = linked
+        index = circular_rim_edges(part)[0]
+
+        cap = make_cap(doc)
+        cap.Opening = [(part, (f"Edge{index}",))]  # must not raise
+
+        assert cap.Opening[0][0] is part
+
+    def test_a_reference_through_a_link_is_placed_where_the_part_sits(self, doc, linked):
+        """The placement trap: a cap built in the part's own frame lands 100 mm away."""
+        link, part = linked
+        index = circular_rim_edges(part)[0]
+
+        _, edge = resolve_reference(link, f"Edge{index}")
+        assert edge.CenterOfMass.x == pytest.approx(
+            part.Shape.Edges[index - 1].CenterOfMass.x + 100.0
+        )
+
+    def test_a_cap_through_a_link_closes_the_assembled_shell(self, doc, linked):
+        link, part = linked
+        index = circular_rim_edges(part)[0]
+
+        cap = make_cap(doc)
+        cap.Opening = [(link, (f"Edge{index}",))]
+        cap.Proxy.build(cap)
+        doc.recompute()
+
+        assert not cap.Shape.isNull()
+        expected = part.Shape.Edges[index - 1].CenterOfMass.x + 100.0
+        assert cap.Shape.BoundBox.Center.x == pytest.approx(expected, abs=1e-6)
+        assert enclosed_regions(extract_regions([link], [cap]))
 
 
 class TestTheCapActuallyCloses:
