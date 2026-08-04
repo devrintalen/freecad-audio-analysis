@@ -22,7 +22,12 @@ from typing import Any, Iterable
 
 import FreeCAD
 
-from freecad.audio_analysis.objects.base import AudioObject, PropertySpec, attach_view_provider
+from freecad.audio_analysis.objects.base import (
+    AudioObject,
+    PropertySpec,
+    attach_view_provider,
+    is_restoring,
+)
 
 #: Property group names, kept consistent so the editor groups sensibly.
 GROUP_CONNECTIONS = "Connections"
@@ -98,16 +103,18 @@ class NetworkObject(AudioObject):
         something else forced a recompute. A description that quietly disagrees with the
         model is worse than no description.
         """
-        if prop != "Label":
+        if prop != "Label" or is_restoring(obj):
             return
         for dependent in getattr(obj, "InList", []):
+            if is_restoring(dependent):
+                continue  # Alphabetical restore order; it is not whole yet. See base.py.
             describe = getattr(getattr(dependent, "Proxy", None), "describe_connections", None)
             if not callable(describe):
                 continue
             try:
                 describe(dependent)
             except AttributeError:
-                pass  # Mid-restore: properties are not all in place yet.
+                pass  # Backstop: a dependent may still be incomplete for other reasons.
 
     def area_reference_property(self, name: str = "AreaReference") -> PropertySpec:
         """A link to CAD faces whose total area drives this element's Area."""

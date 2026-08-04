@@ -17,11 +17,20 @@ from typing import Any, Iterable
 import FreeCAD
 
 from freecad.audio_analysis.physics import air, units
-from freecad.audio_analysis.objects.base import AudioObject, PropertySpec, attach_view_provider
+from freecad.audio_analysis.objects.base import (
+    AudioObject,
+    PropertySpec,
+    attach_view_provider,
+    is_restoring,
+)
 
 #: Frequency at which the reported boundary-layer thickness is evaluated. Shown as a
 #: sanity figure for the user; the solver recomputes it per frequency.
 REFERENCE_FREQUENCY = 1000.0
+
+#: The three values a user actually knows. Everything else on the object is derived from
+#: them, so a change to any of these invalidates the rest.
+INPUT_PROPERTIES = ("Temperature", "StaticPressure", "RelativeHumidity")
 
 
 class Environment(AudioObject):
@@ -128,11 +137,22 @@ class Environment(AudioObject):
         obj.ViscousBoundaryLayer1kHz = props.viscous_boundary_layer(REFERENCE_FREQUENCY) * 1.0e6
 
     def onChanged(self, obj: Any, prop: str) -> None:
-        """Recompute derived values as soon as an input changes."""
-        if prop in ("Temperature", "StaticPressure", "RelativeHumidity"):
-            # During restore the other properties may not exist yet.
-            if hasattr(obj, "Density"):
-                self.execute(obj)
+        """Recompute derived values as soon as an input changes.
+
+        Silent during restore. ``execute`` reads all three inputs and writes seven derived
+        properties, and restore delivers them alphabetically -- ``Density`` first, then
+        ``Proxy``, then ``RelativeHumidity``, ``StaticPressure``, ``Temperature`` and only
+        then ``ThermalConductivity``. Recomputing partway through that sequence raised
+        ``AttributeError`` three times on every document open. :meth:`on_properties_added`
+        covers the case where a value genuinely needs regenerating.
+        """
+        if prop in INPUT_PROPERTIES and not is_restoring(obj):
+            self.execute(obj)
+
+    def on_properties_added(self, obj: Any, names: list[str]) -> None:
+        """Fill in derived values for a file written before they existed."""
+        if any(name not in INPUT_PROPERTIES for name in names):
+            self.execute(obj)
 
 
 def make_environment(doc: Any, analysis: Any = None, name: str = "Environment") -> Any:

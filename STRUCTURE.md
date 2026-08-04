@@ -326,6 +326,15 @@ active DSP/feedback ANC modelling; measurement import and model correlation.
 All objects are `FeaturePython` / `DocumentObjectGroupPython` with custom ViewProviders,
 so they serialise into the `.FCStd` file and appear in the model tree.
 
+**Nothing may recompute while an object is restoring.** FreeCAD writes properties to the
+file in *alphabetical* order and restores them in that order, firing `onChanged` for each,
+with `Proxy` somewhere in the middle — so `onChanged` dispatches into Python well before
+the object is whole. `Environment` is the worst case here: `Density` sorts first and
+`Temperature` twelfth, so a guard testing only `Density` passed on the strength of the
+alphabet and threw three `AttributeError`s into the Report view on every document open.
+Any handler reading more than the property it was handed must call `is_restoring()` and
+defer to `onDocumentRestored`, which runs once everything is in place. See `objects/base.py`.
+
 ```
 AudioAnalysis                       ← container, one per study
 ├── Environment                     ← air properties: ρ, c, μ, T, humidity, static P

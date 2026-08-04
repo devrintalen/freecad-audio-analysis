@@ -161,6 +161,121 @@ class TestPersistence:
         assert hasattr(env, "PrandtlNumber")
 
 
+class TestRestoreOrdering:
+    """FreeCAD restores properties alphabetically, with ``Proxy`` in the middle.
+
+    So ``onChanged`` starts dispatching into Python before the object is whole. An
+    ``Environment`` is the worst case in this workbench: ``Density`` sorts first,
+    ``Temperature`` twelfth, and a guard that checked only ``Density`` passed on the
+    strength of the alphabet -- producing three AttributeError tracebacks in the Report
+    view every time a document was opened.
+    """
+
+    def test_reloading_a_document_raises_nothing_from_onchanged(
+        self, doc, tmp_path, monkeypatch
+    ):
+        analysis = make_analysis(doc)
+        make_environment(doc, analysis)
+        doc.recompute()
+
+        path = str(tmp_path / "restore_order.FCStd")
+        doc.saveAs(path)
+        FreeCAD.closeDocument(doc.Name)
+
+        failures: list[tuple[str, str]] = []
+        original = Environment.onChanged
+
+        def recording(self, obj, prop):
+            try:
+                original(self, obj, prop)
+            except Exception as exc:  # noqa: BLE001 -- FreeCAD swallows these on restore
+                failures.append((prop, repr(exc)))
+
+        monkeypatch.setattr(Environment, "onChanged", recording)
+
+        reloaded = FreeCAD.openDocument(path)
+        try:
+            assert failures == []
+        finally:
+            FreeCAD.closeDocument(reloaded.Name)
+
+    def test_derived_values_survive_the_silenced_restore(self, doc, tmp_path):
+        """Skipping the recompute must not leave the medium unpopulated."""
+        analysis = make_analysis(doc)
+        env = make_environment(doc, analysis)
+        env.Temperature = FreeCAD.Units.Quantity("310.15 K")
+        doc.recompute()
+        expected = env.SpeedOfSound
+
+        path = str(tmp_path / "restore_values.FCStd")
+        doc.saveAs(path)
+        FreeCAD.closeDocument(doc.Name)
+
+        reloaded = FreeCAD.openDocument(path)
+        try:
+            env2 = [o for o in reloaded.Objects if is_audio_object(o, Environment.Type)][0]
+            assert env2.SpeedOfSound == pytest.approx(expected)
+            assert env2.ThermalConductivity > 0.0
+        finally:
+            FreeCAD.closeDocument(reloaded.Name)
+
+    def test_is_restoring_reads_the_state_flag(self):
+        from freecad.audio_analysis.objects.base import is_restoring
+
+        class Stub:
+            State = ("Touched", "Restore")
+
+        class Settled:
+            State = ("Touched",)
+
+        assert is_restoring(Stub())
+        assert not is_restoring(Settled())
+        assert not is_restoring(object())  # no State at all
+
+    def test_onchanged_does_not_recompute_while_restoring(self, doc, monkeypatch):
+        env = make_environment(doc)
+        calls: list[str] = []
+        monkeypatch.setattr(
+            Environment, "execute", lambda self, obj: calls.append("ran")
+        )
+
+        monkeypatch.setattr(
+            "freecad.audio_analysis.objects.environment.is_restoring", lambda obj: True
+        )
+        env.Proxy.onChanged(env, "Temperature")
+        assert calls == []
+
+        monkeypatch.setattr(
+            "freecad.audio_analysis.objects.environment.is_restoring", lambda obj: False
+        )
+        env.Proxy.onChanged(env, "Temperature")
+        assert calls == ["ran"]
+
+    def test_ensure_properties_reports_what_it_added(self, doc):
+        env = make_environment(doc)
+        assert env.Proxy.ensure_properties(env) == []
+
+        env.removeProperty("PrandtlNumber")
+        assert env.Proxy.ensure_properties(env) == ["PrandtlNumber"]
+
+    def test_a_property_added_on_restore_is_given_a_value(self, doc):
+        """An older file has no value for a property that did not exist when it was written."""
+        env = make_environment(doc)
+        env.removeProperty("ThermalConductivity")
+        env.Proxy.onDocumentRestored(env)
+        assert env.ThermalConductivity > 0.0
+
+    def test_an_up_to_date_file_is_not_recomputed_on_restore(self, doc, monkeypatch):
+        """Rewriting correct values would mark an untouched document as modified."""
+        env = make_environment(doc)
+        calls: list[str] = []
+        monkeypatch.setattr(
+            Environment, "execute", lambda self, obj: calls.append("ran")
+        )
+        env.Proxy.onDocumentRestored(env)
+        assert calls == []
+
+
 class TestGeometry:
     def test_measures_a_box(self, doc):
         # 100 x 100 x 100 mm == 1 litre exactly.
