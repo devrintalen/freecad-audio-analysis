@@ -24,8 +24,12 @@ from freecad.audio_analysis.capping import (  # noqa: E402
     closed_loops_containing,
     describe_openings,
     edge_names_in,
+    face_from_wire,
     grow_face,
+    hole_loops_containing,
     loop_for_edge,
+    opening_from_wire,
+    tangent_loop,
     openings_from_references,
     reference_label,
     resolve_reference,
@@ -306,6 +310,168 @@ class TestBuildingTheCap:
 
         with pytest.raises(CapError, match="positive"):
             cap_solid(loop, thickness=0.0)
+
+
+def wavy_rim(radius=30.0, amplitude=2.0, lobes=4, steps=180):
+    """A closed loop that waves out of plane, as an earpad's inner rim does.
+
+    Just the wire: building a solid around it is a separate problem, and most of what
+    needs testing here is what happens to the loop.
+    """
+    profile = [
+        FreeCAD.Vector(
+            radius * math.cos(2.0 * math.pi * i / steps),
+            radius * math.sin(2.0 * math.pi * i / steps),
+            amplitude * math.sin(lobes * 2.0 * math.pi * i / steps),
+        )
+        for i in range(steps)
+    ]
+    profile.append(profile[0])
+    return Part.Wire(Part.makePolygon(profile))
+
+
+TUBE_OUTER = 40.0
+TUBE_INNER = 30.0
+TUBE_BORE = 10.0
+
+
+def pierced_tube(doc, name="Tube"):
+    """A closed hollow tube with one vertical bore through its curved top wall.
+
+    Where a straight bore meets a curved surface the rim is a saddle -- genuinely
+    non-planar, and produced by ordinary modelling rather than by hand-built geometry.
+    """
+    axis = FreeCAD.Vector(1, 0, 0)
+    shell = Part.makeCylinder(TUBE_OUTER, 60.0, FreeCAD.Vector(-30, 0, 0), axis)
+    shell = shell.cut(
+        Part.makeCylinder(TUBE_INNER, 40.0, FreeCAD.Vector(-20, 0, 0), axis)
+    )
+    shell = shell.cut(
+        Part.makeCylinder(
+            TUBE_BORE, 40.0, FreeCAD.Vector(0, 0, 20.0), FreeCAD.Vector(0, 0, 1)
+        )
+    )
+    obj = doc.addObject("Part::Feature", name)
+    obj.Shape = shell
+    doc.recompute()
+    return obj
+
+
+def saddle_rim_edges(obj, at=TUBE_OUTER):
+    """Indices of the arcs where the bore meets the curved wall at height ``at``.
+
+    The rim is not one edge: the cylinder's seam splits it into two arcs, which is exactly
+    why the tangent walk has to put it back together.
+    """
+    found = []
+    for index, edge in enumerate(obj.Shape.Edges, start=1):
+        box = edge.BoundBox
+        if edge.isClosed():
+            continue
+        if abs(box.XLength - 2 * TUBE_BORE) > 0.5:
+            continue
+        if abs(box.YLength - TUBE_BORE) > 0.5:
+            continue
+        if not 0.2 < box.ZLength < 5.0 or abs(box.ZMax - at) > 0.5:
+            continue
+        found.append(index)
+    return found
+
+
+class TestContouredRims:
+    """An earpad rim is a closed loop that lies in no plane. It still wants a flat disc."""
+
+    def test_a_wavy_rim_flattens_to_its_best_fit_plane(self):
+        rim = wavy_rim(radius=30.0, amplitude=2.0)
+
+        face, planar, deviation = face_from_wire(rim)
+        assert not planar
+        assert deviation == pytest.approx(2.0, rel=0.05)
+        # The aperture, not the developed surface: a disc of radius 30.
+        assert face.Area == pytest.approx(math.pi * 30.0**2, rel=0.01)
+
+    def test_the_cap_is_a_disc_not_a_flange(self):
+        """The reported symptom: a 74 mm-deep shape where a thin disc was expected."""
+        rim = wavy_rim(radius=30.0, amplitude=2.0)
+
+        cap = cap_solid(rim, thickness=2.0, overlap=0.5)
+        box = cap.BoundBox
+        assert box.XLength == pytest.approx(2 * 30.5, rel=0.02)
+        assert box.YLength == pytest.approx(2 * 30.5, rel=0.02)
+        # Thickness plus the rim's own +/-2 mm, and nothing like the 74 mm seen before.
+        assert box.ZLength == pytest.approx(2.0 + 2 * 2.0, rel=0.05)
+
+    def test_the_cap_is_thick_enough_to_bridge_the_waves(self):
+        """A 1 mm cap on a rim waving +/-3 mm would stand clear of the material."""
+        rim = wavy_rim(radius=30.0, amplitude=3.0)
+
+        cap = cap_solid(rim, thickness=1.0, overlap=0.5)
+        assert cap.BoundBox.ZLength >= 2 * 3.0
+
+    def test_a_gently_contoured_rim_is_not_flagged(self):
+        opening = opening_from_wire(wavy_rim(radius=30.0, amplitude=0.5), "pad")
+
+        assert not opening.planar
+        assert not opening.badly_out_of_plane
+
+    def test_a_badly_warped_rim_is_flagged(self):
+        opening = opening_from_wire(wavy_rim(radius=30.0, amplitude=8.0), "pad")
+
+        assert opening.badly_out_of_plane
+        assert "contoured" in opening.describe()
+        assert "best-fit plane" in opening.describe()
+
+    def test_a_seam_split_mouth_is_reassembled_by_tangent(self, doc):
+        """No inner wire exists here, so the face-wire search cannot find the mouth.
+
+        Piercing a cylinder makes OpenCascade join the hole to the face's own boundary
+        along the seam: every face ends up with exactly one wire, and the mouth survives
+        only as a sub-chain of it. The shortest closed wire through the picked edge is the
+        side wall of the bore, whose flattened outline is degenerate.
+        """
+        tube = pierced_tube(doc)
+        [arc, *_] = saddle_rim_edges(tube)
+        edge = tube.Shape.Edges[arc - 1]
+
+        assert hole_loops_containing(tube.Shape, edge) == []
+
+        loop = tangent_loop(tube.Shape, edge)
+        assert loop is not None and loop.isClosed()
+        assert len(loop.Edges) == 2  # the two arcs, seam between them
+        assert loop.Length == pytest.approx(2 * math.pi * TUBE_BORE, rel=0.02)
+
+        assert loop_for_edge(tube.Shape, edge).Length == pytest.approx(loop.Length)
+
+    def test_a_seam_line_is_never_mistaken_for_a_continuation(self, doc):
+        """The seam meets the mouth at a right angle; only tangency tells them apart."""
+        tube = pierced_tube(doc)
+        [arc, *_] = saddle_rim_edges(tube)
+        loop = tangent_loop(tube.Shape, tube.Shape.Edges[arc - 1])
+
+        assert all(edge.Length > TUBE_BORE for edge in loop.Edges)
+
+    def test_a_saddle_rim_from_ordinary_modelling_caps_and_closes(self, doc):
+        """The acceptance test, on geometry produced by a boolean rather than by hand.
+
+        A straight bore through a curved wall leaves a saddle-shaped rim -- the same class
+        of loop as an earpad's, arrived at the way a user would actually arrive at it.
+        """
+        tube = pierced_tube(doc)
+        rims = saddle_rim_edges(tube)
+        assert rims, "expected the bore to leave a non-planar rim"
+
+        cap = make_cap(doc)
+        cap.Opening = [(tube, (f"Edge{rims[0]}",))]
+        cap.Proxy.build(cap)
+        doc.recompute()
+
+        assert not cap.Shape.isNull()
+        area = cap.OpeningArea.getValueAs("mm^2").Value
+        assert area == pytest.approx(math.pi * TUBE_BORE**2, rel=0.02)
+
+        # A disc, not a flange: barely thicker than the rim's own deviation.
+        assert cap.Shape.BoundBox.ZLength < 8.0
+        assert enclosed_regions(extract_regions([tube], [cap]))
 
 
 class TestReferences:

@@ -733,6 +733,31 @@ leaves the mouth open. The reliable criterion is topological: the mouth of an op
 **inner wire** of some face, so inner wires are preferred and only within that group does
 the shortest win.
 
+**Not every mouth exists as a wire.** The inner-wire rule assumes OpenCascade represents a
+hole as an inner wire, and for a hole through a *periodic* surface — a cylinder, a sphere —
+it often does not. It joins the hole to the face's own boundary along the seam, leaving one
+wire that runs round the outside, up the seam, around the bore and back. Every face then
+has exactly one wire, the mouth survives only as a sub-chain of it, and the shortest closed
+wire through the picked edge is the side wall of the bore, whose flattened outline is
+degenerate. The answer is the rule the request started from: walk **tangent-continuous**
+neighbours from the picked edge, as PartDesign's fillet does. The two arcs of a bore mouth
+continue one another smoothly; the seam meets them at a right angle. So loop selection is
+three routes in descending order of trust — a hole in a face, then a tangent walk, then the
+shortest closed wire.
+
+**A contoured rim is capped flat, and that is the physics, not a shortcut.** An earpad's
+ear-side opening is a closed loop that lies in no plane; it waves a few millimetres as it
+follows the pad. The cap is a flat disc on the loop's best-fit plane, found by SVD, with
+the extrusion lengthened by the rim's out-of-plane deviation at both ends so it still
+crosses the material all the way round. Flat is *correct* here: that plane is the ear
+plane, and representing the ear as a flat boundary carrying an impedance is what an
+artificial ear physically is (§6.4, route C). The alternative, `Part.makeFilledFace`, was
+tried and is actively wrong — on the driver_cup earpad it fitted a warped surface of a
+third the aperture's area, and extruding that along one normal produced a 74 mm-deep flange
+where a 2 mm disc was wanted. The reported area is the projected aperture, which is the
+number a `Port` wants. Above 10% of the equivalent radius the flattening is reported, since
+where the boundary plane sits is then a modelling decision rather than a detail.
+
 **`makeOffset2D` cannot be used, and the reason is worth recording.** The cap outline is
 grown slightly so it overlaps the surrounding material rather than merely touching it —
 two solids meeting along a curve are the input OCC booleans handle worst. The obvious tool
@@ -786,6 +811,11 @@ the cup, plate, woofer, retainer, mount and screws yields:
 | 0 | **178.5 cm³** | air behind the diaphragm — this is `CupCavity` |
 | 1 | 19.6 cm³ | air between the plate and the woofer front — ear side |
 | — | 8 pockets under 0.2 cm³ | screw holes, acoustically negligible |
+
+On the ear side, capping the earpad's inner rim (`Body005`, one closed 32.7 mm-radius edge)
+gives a 33.6 cm² aperture and extracts **108.283 cm³** — identical to the figure from the
+hand-modelled cap disc it replaces, which is the check that the generated cap is a drop-in
+for a manual one.
 
 Probing on either side of the diaphragm confirms the two are genuinely separate, so the
 driver is doing its job as a boundary. The 178.5 cm³ replaces the 200 cm³ placeholder the

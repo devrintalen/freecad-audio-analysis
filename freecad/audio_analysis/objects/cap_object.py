@@ -112,15 +112,16 @@ class AcousticCap(AudioObject):
         obj.Openings = describe_openings(openings)
         obj.OpeningArea = quantity(sum(o.area_mm2 for o in openings), "mm^2")
 
-        # A non-planar loop is filled with a fitted surface rather than spanned exactly,
-        # so the cap is an approximation of the rim. Harmless for closing a domain,
-        # misleading if it goes unmentioned.
-        approximated = [o for o in openings if not o.planar]
-        if approximated:
+        # Flattening a gently contoured rim is a detail. Flattening a deeply warped one is
+        # a modelling decision, and only the user can say whether that plane is where the
+        # acoustic boundary belongs.
+        for opening in (o for o in openings if o.badly_out_of_plane):
             FreeCAD.Console.PrintWarning(
-                f"Audio Analysis: {obj.Label}: {len(approximated)} loop(s) are not "
-                f"planar, so the cap spans them with a fitted surface. It will close the "
-                f"cavity, but its shape is an approximation of the rim.\n"
+                f"Audio Analysis: {obj.Label}: {opening.label} departs from its best-fit "
+                f"plane by +/-{opening.flatness_mm:.2f} mm across an opening of "
+                f"{opening.equivalent_radius_mm:.1f} mm equivalent radius, and has been "
+                f"capped flat. That is the right boundary for an ear plane, but check it "
+                f"is where you meant the domain to end.\n"
             )
 
 
