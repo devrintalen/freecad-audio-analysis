@@ -12,6 +12,36 @@
 > `CLAUDE.md`; installing the external solvers is `docs/SETUP.md`; benchmark results as
 > they stand are `validation/README.md`.
 
+### Reading this document
+
+Sections 1–5 are the *why*: scope, the physics that forces the architecture, the solvers
+that supply it, and the tier order. Section 6 is the *what*: how all of it appears inside
+FreeCAD, and it is the part where design has met implementation. Sections 7–11 are the
+mechanics: layout, execution, validation, risks, dependencies.
+
+Two tiers are built, so §6 now mixes settled fact with intention. Each subsection that has
+been implemented opens with an **As built** note saying what exists and where a decision
+landed differently from the original plan; everything else is still design. Where the two
+disagree, the code is right and this document is the bug.
+
+**Section numbers are referenced from code comments and tests.** Renumbering is a breaking
+change — add subsections rather than resequencing them.
+
+| | |
+|---|---|
+| §1 | Purpose and scope; design principles |
+| §2 | Physics primer — why headphones are the hard case, why multiple drivers change the architecture |
+| §3 | The solver portfolio and why Elmer anchors it |
+| §4 | Which engine answers which design question |
+| §5 | Capability tiers, in development order |
+| §6 | How it appears inside FreeCAD — object model, UI, geometry, the lumped engine, guidance, outputs |
+| §7 | Repository layout |
+| §8 | Execution architecture |
+| §9 | Verification and validation |
+| §10 | Key risks |
+| §11 | Dependencies and baseline |
+| — | Glossary |
+
 ---
 
 ## 1. Purpose and scope
@@ -302,6 +332,13 @@ tools offer. Every result reports its lumped validity limit.
 Validate against closed-form sealed and vented box theory, and against a two-driver case
 with a shared volume where independent superposition provably gives the wrong answer.
 
+**As built.** All of the above, plus three things the original sketch did not anticipate:
+the validity limit is *attributed to the element that sets it* rather than quoted as one
+number (§6.6); cavity extraction produces a real solid in the document rather than a
+volume figure (§6.5); and a passive crossover is evaluated into the driver's actual
+impedance, which turned out to be the whole reason to simulate one (§6.6). Benchmarks
+agree with closed-form theory to better than 0.03% and with ngspice to about 3 ppm.
+
 ### Tier 2 — Lossless interior acoustics (Elmer Helmholtz)
 Mesh an air cavity, apply rigid walls / prescribed velocity / impedance boundaries, sweep
 frequency, report pressure at probe points and as a field. Covers earcup modes, horn
@@ -329,6 +366,22 @@ active DSP/feedback ANC modelling; measurement import and model correlation.
 
 ## 6. How it appears inside FreeCAD
 
+Where each subsection stands, so it is clear which parts are reporting and which are
+proposing:
+
+| | Subject | State |
+|---|---|---|
+| 6.1 | Workbench identity | **built** |
+| 6.2 | Document object model | **built for Tiers 0–1**; the 3D branches are design |
+| 6.3 | UI surfaces | **built for Tier 1**, and deliberately simpler than first planned |
+| 6.4 | Ear and head geometry | design; the licence conclusions are settled |
+| 6.5 | Geometry input and fluid-domain extraction | **built**: extraction, capping still the user's judgement |
+| 6.6 | The lumped network model | **built** — this is the as-built account of Tier 1 |
+| 6.7 | Network objects versus CAD geometry | **built**: geometry references on the elements that have them |
+| 6.8 | Guiding the user to a correct setup | **built**: templates, checks, marked plots, sweeps |
+| 6.9 | Outputs | **built for Tier 1** curves, summary and export; fields await a 3D solve |
+| 6.10 | Round-tripping lumped ↔ 3D | design; needs Tier 2 |
+
 ### 6.1 Workbench identity
 
 - Name: **Audio Analysis** (internal: `AudioAnalysis`)
@@ -336,69 +389,76 @@ active DSP/feedback ANC modelling; measurement import and model correlation.
   (`package.xml` metadata), per FreeCAD's external-workbench requirement.
 - Deliberately modelled on the FEM workbench's conventions so it feels native: an
   *analysis container* holding *feature objects*, a *mesh*, a *solver*, and *result*
-  objects, driven from a toolbar plus task panels.
+  objects, driven from toolbar commands (§6.3).
+- Registration goes through `freecad/audio_analysis/init_gui.py`, because an addon laid
+  out as `freecad/<package>/` is picked up by FreeCAD's **namespace** loader rather than by
+  the root `InitGui.py`. Both files exist so either loader works; without the former the
+  workbench installs cleanly, imports cleanly, and never appears in the selector.
 
 ### 6.2 Document object model
 
 All objects are `FeaturePython` / `DocumentObjectGroupPython` with custom ViewProviders,
-so they serialise into the `.FCStd` file and appear in the model tree.
+so they serialise into the `.FCStd` file and appear in the model tree. **✔ marks what
+exists today**; everything unmarked is design.
 
 ```
-AudioAnalysis                       ← container, one per study
-├── Environment                     ← air properties: ρ, c, μ, T, humidity, static P
+AudioAnalysis                     ✔ container, one per study
+├── Environment                   ✔ air properties: ρ, c, μ, T, humidity, static P
 ├── Geometry & meshing
-│   ├── AcousticDomain              ← a solid → fluid region (references CAD solid)
-│   ├── SolidDomain                 ← a solid → elastic region (diaphragm, cabinet wall)
-│   ├── MeshRegion                  ← local sizing / boundary-layer refinement
-│   └── AcousticMesh                ← Gmsh-generated mesh (reuses FreeCAD FEM's mesh obj)
+│   ├── AcousticCavity            ✔ air extracted from solids by subtraction (§6.5);
+│   │                               a Part::FeaturePython, so it is a visible solid
+│   ├── AcousticDomain              a solid → fluid region (references CAD solid)
+│   ├── SolidDomain                 a solid → elastic region (diaphragm, cabinet wall)
+│   ├── MeshRegion                  local sizing / boundary-layer refinement
+│   └── AcousticMesh                Gmsh-generated mesh (reuses FreeCAD FEM's mesh obj)
 ├── Materials
-│   ├── FluidMaterial               ← air, helium, custom
-│   ├── SolidMaterial               ← Mylar, aluminium, ABS … (E, ν, ρ, damping)
-│   └── PorousMaterial              ← JCA parameters, or measured flow resistivity
-├── Sources & transducers
-│   ├── Driver                      ← moving-coil / balanced-armature / planar / ESL
-│   │                                 T-S params, motor data, diaphragm ref, polarity;
-│   │                                 two acoustic ports (FrontNode, BackNode) — several
-│   │                                 Drivers per analysis is the normal case (§2.4)
-│   ├── VelocitySource              ← prescribed normal velocity on a face
-│   ├── PressureSource              ← prescribed pressure on a face
-│   └── PointSource                 ← monopole, for scattering/isolation studies
-├── Boundaries
-│   ├── RigidWall                   ← default; usually implicit
-│   ├── ImpedanceBoundary           ← complex Z(f), or from a PorousMaterial
-│   ├── TransferImpedance           ← damping mesh / screen across an internal surface
-│   ├── LeakPath                    ← parametric slit: length, gap, perimeter
-│   ├── RadiationBoundary           ← PML / infinite element / BEM handoff
+│   ├── FluidMaterial               air, helium, custom
+│   ├── SolidMaterial               Mylar, aluminium, ABS … (E, ν, ρ, damping)
+│   └── PorousMaterial              JCA parameters, or measured flow resistivity
+├── Lumped network                ← Tier 1; can coexist with the 3D model (§6.6)
+│   ├── Driver                    ✔ T-S params, polarity, and **two acoustic ports**
+│   │                               (FrontNode, BackNode); several per analysis is the
+│   │                               normal case (§2.4)
+│   ├── AcousticNode              ✔ a junction with no volume of its own
+│   ├── AcousticVolume            ✔ node + compliance; volume and span read from CAD
+│   ├── Port                      ✔ mass + loss between two nodes
+│   ├── AcousticResistance        ✔ damping mesh/screen between two nodes
+│   ├── LeakPath                  ✔ parametric slit: width, gap, depth
+│   ├── PassiveRadiator           ✔ mass, compliance and loss between two nodes
+│   ├── Radiation                 ✔ piston radiation impedance into free space
+│   └── CrossoverFilter           ✔ electrical branch feeding named drivers
+├── Sources & transducers           (3D only; the lumped Driver above is the Tier 1 source)
+│   ├── VelocitySource              prescribed normal velocity on a face
+│   ├── PressureSource              prescribed pressure on a face
+│   └── PointSource                 monopole, for scattering/isolation studies
+├── Boundaries                      (3D only; their lumped counterparts are elements above)
+│   ├── RigidWall                   default; usually implicit
+│   ├── ImpedanceBoundary           complex Z(f), or from a PorousMaterial
+│   ├── TransferImpedance           damping mesh / screen across an internal surface
+│   ├── RadiationBoundary           PML / infinite element / BEM handoff
 │   └── SymmetryPlane
-├── Lumped network                  ← Tier 1; can coexist with the 3D model (§6.6)
-│   ├── AcousticNode                ← a volume of air at one pressure; elements join here
-│   ├── AcousticVolume              ← compliance on a node; volume auto-read from CAD
-│   ├── Port                        ← mass + loss between two nodes
-│   ├── PassiveRadiator             ← between two nodes
-│   ├── AcousticResistance          ← damping mesh/screen between two nodes
-│   └── CrossoverFilter             ← electrical filter branch feeding named drivers
-├── Fixtures                        ← see §6.4 for where the geometry comes from
-│   ├── EarSimulator                ← IEC 60318-1 / -4 / -5, impedance or geometry mode
-│   ├── EarCanalModel               ← generated from ITU-T P.57 Type 4.3/4.4, or imported
-│   ├── HeadModel                   ← imported CC-licensed head/pinna/torso scan
+├── Fixtures                      ← see §6.4 for where the geometry comes from
+│   ├── EarSimulator                IEC 60318-1 / -4 / -5, impedance or geometry mode
+│   ├── EarCanalModel               generated from ITU-T P.57 Type 4.3/4.4, or imported
+│   ├── HeadModel                   imported CC-licensed head/pinna/torso scan
 │   ├── InfiniteBaffle
 │   └── FreeField
-├── Probes
-│   ├── PressureProbe               ← point mic, e.g. drum reference point
-│   ├── FieldProbe                  ← plane/volume for visualisation
-│   └── FarFieldSphere              ← evaluation grid for directivity
+├── Probes                          (3D only — see the note below)
+│   ├── PressureProbe               point mic, e.g. drum reference point
+│   ├── FieldProbe                  plane/volume for visualisation
+│   └── FarFieldSphere              evaluation grid for directivity
 ├── Study
-│   ├── FrequencySweep              ← log/linear/octave-fraction, or explicit list
-│   └── ParameterSweep              ← vary one named property across runs
-├── Solvers                         ← one or more, coexisting
-│   ├── SolverLumped
-│   ├── SolverElmerAcoustic         ← lossless | thermoviscous | coupled
+│   ├── FrequencySweep            ✔ log/linear, or an explicit list
+│   ├── ParameterSweep            ✔ vary one named property across runs
+│   └── TargetCurve               ✔ a response to aim at, loaded from CSV/FRD (§6.9)
+├── Solvers                       ← one or more, coexisting
+│   ├── SolverLumped              ✔
+│   ├── SolverElmerAcoustic         lossless | thermoviscous | coupled
 │   └── SolverBemNumCalc
-└── Results
-    ├── ResponseResult              ← SPL/impedance/phase curves per probe
-    ├── FieldResult                 ← VTK pipeline object (reuses FEM post-processing)
-    ├── PolarResult                 ← directivity data, SOFA-exportable
-    └── ModalResult                 ← mode shapes + frequencies
+└── Results                         (see "results are transient", below)
+    ├── FieldResult                 VTK pipeline object (reuses FEM post-processing)
+    ├── PolarResult                 directivity data, SOFA-exportable
+    └── ModalResult                 mode shapes + frequencies
 ```
 
 **Reuse note:** `AcousticMesh` and `FieldResult` should wrap FreeCAD's existing
@@ -406,9 +466,59 @@ AudioAnalysis                       ← container, one per study
 gives us Gmsh meshing, mesh visualisation, and the whole VTK cut/clip/contour toolset for
 free.
 
+**As built.** Three decisions differ from the sketch above, and each was forced by
+building it.
+
+*Results are transient, not document objects.* The original tree gave `ResponseResult` a
+place in the document; the implementation holds the solution in memory on the solver's
+proxy and drops it on save. A stored curve outlives the model that produced it — edit a
+volume, reopen the file, and the tree shows a result that no longer describes anything in
+it, with nothing to indicate that. Recomputing is a sub-second operation for a lumped
+model, so the honest option is also the cheap one: **`.FCStd` files store the model, and a
+result that needs to survive is exported** (§6.9). This will need revisiting at Tier 2,
+where a solve costs minutes and caching becomes worth its risks (§8).
+
+*There are no `Probe` objects at Tier 1, because every node is one.* A lumped node *is* a
+pressure observation point, already named, already in the tree; adding a separate object
+pointing at it would be bookkeeping. Probes earn their place when a result has spatial
+extent and a location has to be chosen — that is Tier 2.
+
+*Property declaration is idempotent, and this is load-bearing.* Each proxy lists its
+properties once, declaratively, and the base class adds only what is missing — on creation
+*and* on restore. A file saved by an older version silently gains properties added since,
+instead of raising deep inside a solve. Type strings (`Audio::Volume`, `Audio::Driver`, …)
+are the persistent identity that reconnects a saved object to its proxy class, so renaming
+one is a migration, not a rename.
+
 ### 6.3 UI surfaces
 
-**Toolbars / menus**, grouped to match the tree:
+**As built, the UI is deliberately smaller than what was first drawn here** — and the
+gap is a decision rather than a backlog. Tier 1 ships toolbar commands, FreeCAD's own
+property editor, the Report view, and matplotlib windows. No task panels, no dockable
+results viewer, no job monitor. Each of those omissions is justified below, with the
+condition that would reverse it.
+
+#### Toolbars and menus
+
+Five toolbars exist, because **only groups with a command behind them are created**;
+empty toolbars advertising unbuilt features are clutter that makes a workbench feel
+broken. Every command also appears under one *Audio Analysis* menu.
+
+| Toolbar | Commands |
+|---|---|
+| *Audio Analysis* | New analysis from template, new analysis, add environment, check setup, solver status |
+| *Audio Geometry* | Extract cavity from selection, volume from cavity |
+| *Audio Network* | Volume, node, driver, crossover, port/vent, damping mesh, leak path, passive radiator, radiation |
+| *Audio Solve* | Frequency sweep, lumped solver, solve, plot results, parameter sweep, run parameter sweep, target curve, compare against target, export results |
+| *Audio Tools* | Measure volume |
+
+*Audio Solve* has grown into everything downstream of a model — solving, plotting,
+sweeping, comparing and exporting — which is the shape of the eventual *Results* group
+(9 below) waiting to be split off. It should be, once the plot commands outnumber the
+solve ones.
+
+The nine-group layout below remains the destination as the tiers land; the groups arrive
+with the commands that populate them.
 
 1. *Analysis* — new analysis, set environment, activate analysis
 2. *Model* — add fluid domain, solid domain, material, mesh region
@@ -420,22 +530,65 @@ free.
 8. *Solve* — mesh, define sweep, run, job monitor
 9. *Results* — response plot, polar plot, field view, export
 
-**Task panels** for every object, following FreeCAD's `TaskPanel` idiom, with geometry
-reference pickers (select faces/solids in the 3D view) as the primary input mode.
+#### Editing: the property editor, not task panels
 
-**Results viewer.** A dockable panel with:
-- SPL vs frequency (log-x, dB-y), overlaying multiple probes and multiple runs
-- Electrical impedance magnitude + phase
-- Cone excursion vs frequency, with an Xmax limit line
-- Group delay / phase
-- Polar plots and directivity sonograms
-- Cursor readout, fractional-octave smoothing, CSV / FRD export
+Task panels were the plan; the property editor is what Tier 1 uses, and it turned out to
+be the better trade for the kind of input a lumped model needs. Everything a lumped
+element takes is a **quantity** — a volume, a length, a resistance in rayls — and
+FreeCAD's property editor already parses units, participates in the expression engine,
+integrates with undo, and can be driven from a spreadsheet. A task panel duplicating that
+would be a worse version of it.
 
-Implemented with matplotlib on Qt (matplotlib ships with FreeCAD), with `pyfar` for
-smoothing, resampling, and SOFA export.
+**A task panel earns its place when input is a geometric pick or a multi-step decision**,
+and both are Tier 2 concerns: selecting the faces that cap an open cavity, choosing which
+of seven extracted void regions is the front volume, assigning boundary conditions to
+surfaces. That is when the idiom pays for itself, with reference pickers as the primary
+input mode.
 
-**Expression support.** Every numeric property must be an `App::Property*` participating
-in FreeCAD's expression engine, so a spreadsheet can drive an entire design study.
+**Expression support.** Every numeric property is an `App::Property*` quantity
+participating in FreeCAD's expression engine, so a spreadsheet can drive an entire design
+study. Built, and it is what makes the property editor sufficient.
+
+#### Explaining, without a task panel to explain in
+
+§6.8's second guidance mechanism assumed a panel would open with a physical explanation of
+the object. Without panels, that obligation moved to four places, and it is *not*
+optional — the explanation is a requirement of the design, only the surface changed:
+
+- **Property tooltips.** Every property is declared with a sentence saying what it means
+  physically and how to choose it, not a restatement of its name.
+- **A `Description` property** on nodes and volumes, so a template's `EarCavity` arrives
+  already saying "air between the earpad and the ear — its pressure is the result".
+- **Command tooltips** that state the physics: *"Add a duct or opening. End correction is
+  applied automatically."*
+- **`Label2` as a topology column** — each element writes its far end there
+  (`EarCavity -> CupCavity`), so the tree shows the graph rather than a flat list (§6.6).
+
+#### Reporting: the Report view, plus read-only properties
+
+Preflight findings, solver status, solve outcomes and target comparisons print to
+FreeCAD's Report view, which is scrollable, copyable and already where users look for
+messages. The important state is *also* written back onto read-only properties of the
+solver — `Status` ("solved 96 points, 9 elements, 6 nodes") and `ValidBelow` ("under
+0.5 dB below 200 Hz, about 2 dB by 400 Hz, set by CupCavity") — so it sits beside the
+model in the property editor rather than scrolling away.
+
+A **job monitor** panel belongs with the first solver that takes minutes and runs as a
+subprocess (§8). A lumped solve returns before a progress bar could paint.
+
+#### Results: matplotlib windows now, a dockable panel later
+
+`plot_solution` opens a four-panel overview — SPL at every node, electrical impedance,
+diaphragm excursion against its Xmax line, and group delay — with the region beyond the
+validity limit shaded on each. `plot_contributions` overlays each driver on their sum for
+crossover work, and `plot_family` overlays a parameter sweep with a delta view against its
+reference (§6.9). The plotting module never imports `FreeCADGui`, so every figure is
+reproducible headlessly in a test.
+
+The dockable viewer with cursor readout, fractional-octave smoothing and run-to-run
+overlay remains the plan. It is a comparison surface, and comparison across *stored* runs
+is what the transient-results decision in §6.2 currently rules out; both should be settled
+together. `pyfar` is not yet a dependency — smoothing and SOFA export arrive with it.
 
 ### 6.4 Ear and head geometry — where it comes from
 
@@ -609,10 +762,24 @@ the back volume, the nozzle bore, the vent channel. So the workflow always inclu
 3. **Cap and close** an open cavity by adding faces across its openings, which then become
    the ports where sources, impedance terminations and leaks attach.
 
-`AcousticDomain` therefore references *a solid representing air*, not a part. Route 2
-deserves a dedicated command ("extract cavity from assembly") once meshing lands at
-Tier 2; it is the step most likely to be tedious by hand and it is where an
-assembly-aware workbench earns its keep over exporting STEP to a standalone tool.
+`AcousticDomain` therefore references *a solid representing air*, not a part. Route 2 is
+the step most likely to be tedious by hand, and it is where an assembly-aware workbench
+earns its keep over exporting STEP to a standalone tool.
+
+**As built.** Route 2 arrived at Tier 1 rather than waiting for meshing, because an
+`AcousticVolume` wants a measured cavity as much as a mesher does. *Extract cavity from
+selection* fuses the selected solids, subtracts them from a padded bounding box, and
+creates an `AcousticCavity` — a `Part::FeaturePython`, so the extracted air is a **solid
+you can see and rotate in the 3D view**. That visibility is the point: extraction is
+exactly the step where a plausible wrong answer is easy to get (the wrong region, an
+unclosed model, a cap that missed), and looking at the result is the fastest way to catch
+it. *Volume from cavity* then creates the `AcousticVolume` that references it, so the
+lumped compliance tracks the CAD.
+
+Recomputation is opt-out (`AutoUpdate`), because fusing a full assembly takes on the order
+of fifteen seconds — fine on demand, intolerable on every document touch. Capping remains
+the user's judgement, per the measurements below; the command reports the regions it found
+and their volumes rather than choosing for them.
 
 **Measured on a real assembly.** Run against a two-way over-ear cup (`examples/inspect_assembly.py`,
 118 solids across eight externally linked documents — a 70 mm woofer, a tweeter, cup,
@@ -664,6 +831,14 @@ rather than a set of enclosure formulas. The model is the standard electro-mecha
 acoustic analogy: every element is an impedance between two nodes, and each frequency is
 one linear solve.
 
+**This subsection is as-built.** All of it exists in `physics/network.py`,
+`physics/crossover.py`, `physics/driver.py` and `physics/validity.py`, with the document
+objects in `objects/network_objects.py`. It is the fullest account of a working part of the
+workbench, so it is written in the present tense throughout; where a paragraph describes an
+intention rather than code, it says so.
+
+#### Nodes and elements
+
 **Nodes are volumes of air at a common pressure.** An `AcousticNode` is a connection
 point. Three kinds matter:
 
@@ -680,7 +855,7 @@ point. Three kinds matter:
 | `Port` / `LeakPath` | two nodes | mass + resistance |
 | `AcousticResistance` | two nodes | damping mesh or screen |
 | `PassiveRadiator` | two nodes | mass, compliance, loss |
-| `RadiationBoundary` | one node to exterior | radiation impedance |
+| `Radiation` | one node to exterior | radiation impedance |
 | `CrossoverFilter` | electrical only, feeding named drivers | drive voltage and source impedance versus frequency |
 
 The key structural point: **a driver has two acoustic ports.** Its front radiates into one
@@ -691,7 +866,9 @@ Connections are explicit `App::PropertyLink` references, so an `AudioAnalysis` h
 `Driver` objects both pointing their front node at the ear cavity produces their acoustic
 summation automatically from the solve, with correct relative phase.
 
-**Showing a graph in a tree.** A lumped network is a graph — an element joins two nodes, a
+#### Showing a graph in a tree
+
+A lumped network is a graph — an element joins two nodes, a
 node carries many elements — so there is no single correct parent for anything, and a flat
 list under the analysis loses the topology entirely. Each element is therefore filed under
 the **first node it connects**, which turns the tree into an adjacency list:
@@ -720,8 +897,9 @@ only what nothing else claims — because appearing twice would be worse than a 
 An element with every terminal on the exterior has no parent and stays at the top level,
 where being conspicuous is the right outcome: it is almost always a wiring mistake.
 
-**Solver choice: native, not ngspice.** Assemble the nodal admittance matrix in NumPy and
-solve per frequency. Two reasons this beats generating a SPICE netlist:
+#### Solver choice: native, not ngspice
+
+Assemble the nodal admittance matrix in NumPy and solve per frequency. Two reasons this beats generating a SPICE netlist:
 
 1. Several impedances are not R/L/C. Radiation impedance involves Bessel functions;
    viscothermal slot impedance involves complex-argument transcendental functions
@@ -736,7 +914,9 @@ is R/L/C, and users may want to import existing netlists) and as an independent
 cross-check of the native solver on cases both can express. It stays in the portfolio; it
 is no longer the primary lumped engine.
 
-**Crossovers.** A `CrossoverFilter` is one branch: it names the drivers it feeds and
+#### Crossovers
+
+A `CrossoverFilter` is one branch: it names the drivers it feeds and
 supplies them with a drive voltage and a source impedance that both vary with frequency.
 Nothing about the acoustic solve changes — `Driver` already had those two parameters, and
 a filter simply turns them from numbers into curves. A driver with no crossover is driven
@@ -765,12 +945,16 @@ there while every physical quantity stays finite. So the coil current is written
 as `i = (V·gain − α·emf)/(α·Zc + β)`; dividing through by `α` recovers the Thévenin form,
 and that is precisely the division that must never happen.
 
-**One amplifier, several branches.** Each branch carries an independent filter. That is
+#### One amplifier, several branches
+
+Each branch carries an independent filter. That is
 exact as long as the amplifier's output impedance is zero, since it then holds the common
 node at a fixed voltage regardless of what the other branch draws — true to a fraction of
 a decibel for any normal damping factor. Set a non-zero source impedance and the branches
 genuinely do load each other; that coupling is *not* modelled, and the checks say so.
-**Two different impedance questions, and they need separate answers.**
+
+#### Two different impedance questions, and they need separate answers
+
 `input_impedance(driver)` is one branch's own impedance, computed with the other drivers
 *unpowered but still present* — the thing an impedance rig measures, and a property of the
 branch. `system_impedance()` is the drive voltage over the total current with everything
@@ -784,7 +968,9 @@ Conflating them is not academic: a tweeter behind a high-pass, shaken through th
 cavity by the woofer, is generating back-EMF while its own amplifier holds its terminals at
 nearly zero volts. Read that as an impedance and it comes out at 0 Ω.
 
-**Polarity is checked, because it is invisible.** An Nth-order filter rotates phase by N
+#### Polarity is checked, because it is invisible
+
+An Nth-order filter rotates phase by N
 quarter-turns, so at the crossover frequency the two branches are N×90° apart. At LR4 that
 is a full turn and the drivers sum flat; at LR2 it is half a turn and they cancel into a
 deep notch exactly where both are working hardest. Nothing in a parts list shows this, and
@@ -801,7 +987,9 @@ rule is the correct default, an unconsidered polarity is nearly always a mistake
 solve is what settles it. This is the general shape guidance in §6.8 should take: state the
 expectation, say why, and point at the experiment.
 
-**Reporting obligations.** Every lumped result carries the validity limit from §2.4.
+#### Reporting the validity limit
+
+Every lumped result carries the validity limit from §2.4.
 Curves are drawn beyond it only when marked — greyed, dashed, or cut off — because a
 confident-looking response plotted to 20 kHz from a model valid to 400 Hz is the single
 easiest way for this tool to mislead its user.
@@ -882,38 +1070,68 @@ aimed at people who are strong in CAD but new to audio engineering must therefor
 **opinionated and explanatory**, not a blank canvas. Five mechanisms, in the order the
 user meets them.
 
-**1. Templates, not a blank canvas.** Creating an analysis asks what is being designed —
-in-ear, on-ear, over-ear closed, **over-ear open-back**, sealed box, vented box, free
-field. Each instantiates a correct network topology with named nodes and placeholder
-elements. The user supplies *values*; they never have to invent *topology*. Getting the
-graph wrong is the most consequential and least visible mistake available, so the
+**1. Templates, not a blank canvas.** Creating an analysis asks what is being designed.
+Each template instantiates a correct network topology with named nodes and plausible
+starting values. The user supplies *values*; they never have to invent *topology*. Getting
+the graph wrong is the most consequential and least visible mistake available, so the
 workbench should not offer the chance to make it.
 
-**2. Objects that explain themselves.** Every task panel opens with a short statement of
-what the object represents physically and which results it moves. Defaults are sensible
-and carry provenance — where a number came from, and how much to trust it.
+The six built (`templates.py`), each arriving with a frequency sweep and a solver already
+attached:
 
-**3. Preflight checks before every solve.** Implemented in `checks.py`. Each finding
-answers three questions, not one: what is wrong, **why it matters physically**, and what
-to do. Severity governs consequence — `ERROR` blocks the solve, `WARNING` runs but
-annotates the results, `INFO` records an assumption. The catalogue grows per tier:
+| Key | Topology |
+|---|---|
+| `over_ear_open` | ear cavity + cup cavity + pad seal leak, plus a rear vent with a mesh behind it |
+| `over_ear_closed` | the same without the vent — a sealed cup |
+| `over_ear_two_way` | woofer and tweeter into a shared ear cavity, separate rear chambers, a crossover pair |
+| `in_ear` | front volume → damped nozzle → occluded canal, sealed back volume, tip seal leak |
+| `sealed_box` | driver radiating into the room, rear loaded by a sealed enclosure |
+| `vented_box` | the same plus a tuned port, both radiating |
+
+*On-ear* and *free field* were in the original list and are not built; the first is
+`over_ear_closed` with different numbers, and the second is a termination rather than a
+topology. Each template also carries a `next_steps` string naming what the user should
+replace first, because plausible starting values are the one thing more dangerous than
+blank ones.
+
+**2. Objects that explain themselves.** The plan put this in a task panel; there are no
+task panels, so it lives in property tooltips, `Description` properties, command tooltips
+and the tree's topology column (§6.3). The obligation is unchanged: every object states
+what it represents physically and which results it moves, and defaults carry provenance —
+where a number came from, and how much to trust it.
+
+**3. Preflight checks before every solve.** Implemented in `checks.py` as registered
+functions over an analysis, pure and headless-testable. Each finding answers three
+questions, not one: what is wrong, **why it matters physically**, and what to do. Severity
+governs consequence — `ERROR` blocks the solve, `WARNING` runs but annotates the results,
+`INFO` records an assumption. Every diagnostic also carries a stable code and a reference
+back into this document, so a finding can be asserted on in a test and read up on by a
+user.
+
+The catalogue grows per tier. Tiers 0 and 1 are **built**:
 
 | Tier | Checks |
 |---|---|
-| 0 | medium present and singular; temperature/pressure plausible (catches Celsius-into-kelvin and the kPa trap); analysis non-empty |
-| 1 | every driver has both acoustic ports connected; no floating nodes; sweep versus lumped validity; excursion beyond Xmax; crossover loads a real impedance |
+| 0 ✔ | medium present and singular; temperature/pressure plausible (catches Celsius-into-kelvin and the kPa trap); analysis non-empty |
+| 1 ✔ | both acoustic ports connected on every driver; no floating or unreachable nodes; sweep versus lumped validity; which element binds the limit, and whether its span was measured or guessed; crossover feeds a driver that exists; passive ladder loads a real impedance; crossover polarity against filter order; crossover frequency inside the validity limit |
+| 1 ✔ | *post-solve*: peak excursion against Xmax, which depends on the answer and the drive level rather than on the setup, so it runs after the solve rather than before |
 | 2 | fluid domain closed; unclassified openings listed for the user to call leak or artefact; mesh resolves the top frequency |
 | 3 | boundary layers resolved in narrow gaps; gaps thinner than δ_v flagged; screen impedances present where geometry implies damping |
 | 4 | far-field distance genuinely far field; BEM mesh adequate at the top frequency |
 
+The polarity check set the pattern the rest should follow: it states the expectation, says
+why, and points at the experiment that settles it, rather than issuing a verdict a real
+pair of drivers can falsify (§6.6).
+
 **4. Results that state their own limits.** Every lumped curve carries its validity limit
-(§2.4), drawn greyed or cut off beyond it. A plot that runs confidently to 20 kHz from a
-model valid to 400 Hz is the easiest way for this tool to mislead.
+(§2.4), and plots shade the region beyond it in three bands rather than drawing one
+confident line to 20 kHz. Built (§6.6, §6.9).
 
 **5. Comparison as the teaching tool.** The fastest way to learn what a design choice does
 is to change it and watch. `ParameterSweep` runs a study across a value and overlays the
 results, so the question "what do my back vents actually do" is answered by a curve family
-rather than by reading a textbook.
+rather than by reading a textbook. Built; `examples/open_back_study.py` is that question,
+run.
 
 #### Worked example: what does an open back do?
 
@@ -962,18 +1180,18 @@ Values are stored **complex, always** — magnitude-only would silently destroy 
 summation (§2.4) and group delay — and each curve carries the frequency above which it
 stops being trustworthy.
 
-| Curve | Read for | From tier |
-|---|---|---|
-| **SPL vs frequency** | the headline answer: how it sounds | 1 |
-| Per-driver contributions overlaid on their sum | crossover work; where each driver hands over | 1 |
-| **Electrical impedance**, magnitude and phase | amplifier matching; resonance identification | 1 |
-| Sensitivity (dB/V or dB/mW) | the number that goes on a spec sheet | 1 |
-| Diaphragm excursion, with an Xmax limit line | how loud it can go before distorting | 1 |
-| Phase and **group delay** | timing; drivers fighting through a crossover | 1 |
-| Response vs seal condition (a curve *family*) | how much bass depends on fit — dominant for real headphones | 1 |
-| Deviation from a target curve | how far from Harman / diffuse-field | 1 |
-| Polar plots and directivity sonograms | off-axis behaviour; loudspeaker dispersion | 4 |
-| Passive isolation vs frequency | how much outside noise gets in | 4 |
+| Curve | Read for | Tier | State |
+|---|---|---|---|
+| **SPL vs frequency**, at every node | the headline answer: how it sounds | 1 | ✔ |
+| Per-driver contributions overlaid on their sum | crossover work; where each driver hands over | 1 | ✔ |
+| **Electrical impedance** — per branch *and* for the system | amplifier matching; resonance identification (§6.6) | 1 | ✔ |
+| Sensitivity (dB/V *and* dB/mW) | the number that goes on a spec sheet | 1 | ✔ |
+| Diaphragm excursion, with an Xmax limit line | how loud it can go before distorting | 1 | ✔ |
+| Phase and **group delay** | timing; drivers fighting through a crossover | 1 | ✔ |
+| Response vs seal condition (a curve *family*) | how much bass depends on fit — dominant for real headphones | 1 | ✔ via `ParameterSweep` on the leak gap |
+| Deviation from a target curve | how far from Harman / diffuse-field | 1 | ✔ |
+| Polar plots and directivity sonograms | off-axis behaviour; loudspeaker dispersion | 4 | |
+| Passive isolation vs frequency | how much outside noise gets in | 4 | |
 
 #### Fields, once there is a 3D solve
 
@@ -997,13 +1215,23 @@ exercise into a design decision.
 #### A summary card, not just curves
 
 For someone strong in CAD and new to audio, a wall of curves is data, not guidance. Every
-result carries a short plain-language panel with the numbers that characterise the design:
+result carries a short plain-language panel with the numbers that characterise the design
+(`results/summary.py`):
 
-- system resonance and its Q
-- −3 dB and −10 dB points — bass extension
-- sensitivity, and maximum SPL before excursion exceeds Xmax
-- RMS deviation from the chosen target curve, over a stated band
-- the frequency above which the result is not trustworthy, stated plainly
+| Figure | State |
+|---|---|
+| Reference level, and the peak with its offset from that reference | ✔ |
+| −3 dB and −10 dB points — bass extension | ✔ |
+| Sensitivity in dB/V and dB/mW, with the impedance named | ✔ |
+| The frequency above which the result is not trustworthy, stated plainly | ✔ |
+| RMS deviation from a loaded target curve, over a stated band | ✔ (`results/target.py`) |
+| Excursion against Xmax | ✔, as a post-solve diagnostic rather than a card line (§6.8) |
+| System resonance and its Q, read off the impedance curve | the benchmarks compute these; the card does not yet report them |
+| Maximum SPL before excursion exceeds Xmax | not built — needs the excursion check inverted into a level |
+
+The reference level is the **median SPL over the trusted range**, not the level at one end
+of the sweep: anchoring on an endpoint that happens to sit on a slope would make "the
+−3 dB point" meaningless, which for a headphone response it usually would.
 
 Sensitivity is quoted **both** in dB/V and dB/mW with the impedance named, because
 headphones are specified both ways and the gap is large — 15 dB at 32 Ω, 20 dB at 300 Ω —
@@ -1051,12 +1279,24 @@ Every plot and export carries how it was made: solver and version, mesh size, dr
 medium conditions, validity limit, date. A result that cannot say where it came from is
 not evidence, and six months later nobody remembers which run produced which curve.
 
+**As built,** a curve carries a `metadata` dictionary that every exporter writes into its
+header comments, and the validity limit and the element that set it travel on the curve
+itself. Plots show the limit; they do not yet stamp the medium and the date onto the
+figure, which they should before any result leaves as an image.
+
 #### Export
 
-CSV and **FRD** for curves (FRD being what loudspeaker tools read, so results can leave for
-a crossover simulator), **SOFA** for directivity and HRTF data, VTU for fields, PNG/SVG for
-plots, and a single-file HTML or PDF report bundling curves, summary card, provenance and
-the preflight diagnostics.
+Because results are not stored in the document (§6.2), **export is how a result outlives
+the session** — that raises it from a convenience to part of the workflow.
+
+| Format | For | State |
+|---|---|---|
+| **CSV** | the archive format: readable, diffable, opens as a chart anywhere, carries the provenance header | ✔ |
+| **FRD** | what loudspeaker tools read, so a response can leave for a crossover simulator or enclosure program; pressure curves only | ✔ |
+| PNG / SVG | plots, via matplotlib's own save | ✔ |
+| **SOFA** | directivity and HRTF data | Tier 4, with `pyfar`/`sofar` |
+| VTU | fields | Tier 2, through FreeCAD's VTK pipeline |
+| Single-file HTML or PDF report | curves, summary card, provenance and preflight diagnostics in one artefact | not built |
 
 ### 6.10 Round-tripping between lumped and 3D
 
@@ -1128,6 +1368,17 @@ freecad-audio-analysis/
 
 ## 8. Execution architecture
 
+**Tier 1 does not use any of this, by design.** The lumped solve is a NumPy call in
+FreeCAD's own process: no case directory, no subprocess, no job monitor, no cache. The
+pipeline below is what the first *external* solver needs, and it arrives with Tier 2. What
+already exists of it is the last requirement — solver discovery and graceful degradation
+(`solvers/discovery.py`), which Tier 1 needs precisely because it must run when none of
+these binaries are present.
+
+Caching, when it arrives, is the natural place to revisit the transient-results decision
+in §6.2: a keyed case directory is a store for expensive results that a `.FCStd` should not
+be carrying, and it makes staleness detectable rather than invisible.
+
 ```
 FreeCAD document objects
         │  (write)
@@ -1155,9 +1406,10 @@ Requirements on this layer:
 - **Cached.** Hash the geometry, mesh, physics setup, and frequency list. Unchanged inputs
   reuse existing results rather than re-solving.
 - **Unit discipline.** FreeCAD's internal length unit is **mm**; every solver here expects
-  **SI (m)**. Conversion happens at exactly one place — the solver input writer — and is
-  covered by tests. This is the single most likely source of silent, plausible-looking
-  wrong answers.
+  **SI (m)**. Conversion happens at exactly one place — `physics/units.py`, called by
+  physics code and by input-deck writers — and is covered by tests. This is the single most
+  likely source of silent, plausible-looking wrong answers. FreeCAD's internal *pressure*
+  unit is kilopascals, which is the same trap wearing a different hat.
 - **Graceful degradation.** If a solver binary is missing, the relevant commands are
   disabled with an explanatory message, not a traceback. Tier 1 must work with zero
   external binaries beyond what FreeCAD already ships.
