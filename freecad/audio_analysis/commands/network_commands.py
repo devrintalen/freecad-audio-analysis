@@ -473,6 +473,68 @@ class ExportResults(AudioCommand):
         return FreeCAD.ActiveDocument is not None and find_active_analysis() is not None
 
 
+class CapOpening(AudioCommand):
+    """Build a cap solid across an opening, from one edge on its rim.
+
+    The step that makes cavity extraction usable on a real part. A cup is open at the ear
+    side and open again at every port, and until those are closed there is no enclosed
+    void to find -- but modelling each plug by hand is tedious enough that the extraction
+    command was, in practice, blocked on it.
+    """
+
+    Name = "CapOpening"
+    MenuText = "Cap opening"
+    ToolTip = (
+        "Create a cap solid that closes an opening. Pick one edge on the rim and the "
+        "rest of the loop is found from it, as fillet does. Capping is not sealing: the "
+        "cap closes the fluid domain, and the opening is declared open in the network."
+    )
+    IconName = "Cap"
+
+    def run(self) -> None:
+        import FreeCADGui
+
+        from freecad.audio_analysis.objects import find_active_analysis
+        from freecad.audio_analysis.objects.cap_object import make_cap
+
+        references = [
+            (selected.Object, tuple(selected.SubElementNames))
+            for selected in FreeCADGui.Selection.getSelectionEx()
+            if selected.SubElementNames
+        ]
+        if not references:
+            FreeCAD.Console.PrintError(
+                "Audio Analysis: select an edge on the rim of the opening first. A whole "
+                "object is not enough -- Cap needs to know which hole to close.\n"
+            )
+            return
+
+        doc = FreeCAD.ActiveDocument
+        with transaction("Cap opening"):
+            cap = make_cap(doc, find_active_analysis())
+            cap.Opening = references
+            cap.Proxy.build(cap)
+
+        if not cap.Shape.isNull():
+            FreeCAD.Console.PrintMessage(
+                f"Audio Analysis: {cap.Label}:\n{cap.Openings}\n"
+                f"Audio Analysis: add {cap.Label} to a cavity's Caps property, then "
+                f"extract. If this opening is a port, give its "
+                f"{cap.OpeningArea.getValueAs('mm^2').Value:.1f} mm2 to a Port element -- "
+                f"capping it here does not make it acoustically closed.\n"
+            )
+
+    def IsActive(self) -> bool:
+        try:
+            import FreeCADGui
+
+            return FreeCAD.ActiveDocument is not None and any(
+                s.SubElementNames for s in FreeCADGui.Selection.getSelectionEx()
+            )
+        except (ImportError, AttributeError):
+            return False
+
+
 class ExtractCavity(AudioCommand):
     """Derive the air from selected parts.
 
@@ -648,7 +710,7 @@ class NewFromTemplate(AudioCommand):
         return True
 
 
-GEOMETRY_COMMANDS = (ExtractCavity, VolumeFromCavity)
+GEOMETRY_COMMANDS = (CapOpening, ExtractCavity, VolumeFromCavity)
 MODEL_COMMANDS = (
     AddVolume, AddNode, AddDriver, AddCrossover, AddPort, AddResistance, AddLeak,
     AddPassiveRadiator, AddRadiation,

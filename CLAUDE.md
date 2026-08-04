@@ -61,6 +61,12 @@ valid to 400 Hz is the easiest way for this tool to mislead.
 **Missing binaries degrade gracefully.** A missing `ElmerSolver` disables the relevant
 commands with an explanatory message — never a traceback.
 
+**Never call `Wire.makeOffset2D`.** It rejects ordinary geometry and corrupts the OCC kernel
+as it does: a run of individually-recoverable `CADKernelError`s segfaults FreeCAD and takes
+the user's unsaved document with it, and no `try`/`except` catches that. Grow an outline
+with `Shape.scale` about its centroid instead — a native transform that cannot fail and
+preserves exact curves, where `transformGeometry` re-approximates them. `STRUCTURE.md` §6.5.
+
 **Ear geometry is a solved problem — use the right source.** See `STRUCTURE.md` §6.4.
 - **Ear canal / concha / pinna simulator** → ITU-T P.57 (06/2021), a *free* standard whose
   annexes give full tabulated cross-sections. `acoupy_ears` (MIT) already implements it and

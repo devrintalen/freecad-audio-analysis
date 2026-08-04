@@ -708,6 +708,61 @@ echoed to the Report view, and re-raised by the preflight pass through
 `check_cavity_boundary_geometry` so a defect blocks a solve rather than merely producing a
 volume of zero.
 
+#### Generating caps from the CAD, rather than asking for them
+
+Extraction needs a cap across every opening, and for a while the workbench asked for those
+without helping to make them — which left the most-used command blocked on the most tedious
+step. `AcousticCap` (`capping.py`, the **Cap opening** command) closes that gap: pick one
+edge on the rim of an opening and it recovers the rest of the loop and builds the plug,
+the way PartDesign's fillet expands from a single edge to the ones that continue from it.
+
+**Capping is not sealing.** A cap closes the *fluid domain* so the boolean has something
+bounded to find; it asserts nothing about whether the opening is acoustically open. A port
+that has been capped here reappears in the network as a `Port` — with an
+`AcousticResistance` in series if it is covered — and the cap's `OpeningArea` is precisely
+the number that element needs. So the workflow is: cap **every** opening, then decide in the
+network which of them are open. This is the same separation §6.7 draws between geometry and
+topology, and it is the part users are most likely to misread.
+
+**An opening is a hole in a face, not the shortest loop through an edge.** The first rule
+tried was "take the shortest closed wire containing the picked edge", and it is wrong in a
+way that only shows up on real parts. A 20×10 slot through a 5 mm wall has a rim of
+perimeter 60, but the *side wall of its own bore* is also a closed loop through the same
+edge, of perimeter 2(20+5) = 50 — shorter. Picking by length caps the inside of the bore and
+leaves the mouth open. The reliable criterion is topological: the mouth of an opening is an
+**inner wire** of some face, so inner wires are preferred and only within that group does
+the shortest win.
+
+**`makeOffset2D` cannot be used, and the reason is worth recording.** The cap outline is
+grown slightly so it overlaps the surrounding material rather than merely touching it —
+two solids meeting along a curve are the input OCC booleans handle worst. The obvious tool
+for that is `Wire.makeOffset2D`, and it is a trap. `BRepOffsetAPI_MakeOffset` rejects
+entirely ordinary port outlines — an 0.8 mm bored circle in the driver_cup model among them
+— and it does not fail cleanly: each raised `CADKernelError` leaves the kernel slightly
+worse, and a run of them **segfaults the process**. Measured, not theorised: seventeen
+openings offset in sequence, each individually recoverable, killed FreeCAD on the
+seventeenth, and no `try`/`except` catches that. The outline is therefore enlarged by
+`Shape.scale` about its own centroid — a native uniform transform that cannot fail and,
+unlike `transformGeometry`, leaves a circle a circle instead of re-approximating it as a
+spline and losing a fraction of a percent of its area.
+
+**Measured on the driver_cup cup.** Enumerating the inner wires of `Body004` finds 25
+mouths: the ear-side rim (79.2 cm², a 16-edge planar loop), 8 vent slots of 177.2 mm² each
+seen from both ends, and 8 screw holes. Capping one mouth per opening and extracting against
+the cup, plate, woofer, retainer, mount and screws yields:
+
+| Region | Volume | What it is |
+|---|---|---|
+| 0 | **178.5 cm³** | air behind the diaphragm — this is `CupCavity` |
+| 1 | 19.6 cm³ | air between the plate and the woofer front — ear side |
+| — | 8 pockets under 0.2 cm³ | screw holes, acoustically negligible |
+
+Probing on either side of the diaphragm confirms the two are genuinely separate, so the
+driver is doing its job as a boundary. The 178.5 cm³ replaces the 200 cm³ placeholder the
+headphone template ships with. The 8 slots total 14.2 cm² of vent area, which is the number
+the `RearVent` `Port` wants — its 800 mm² default is a placeholder and understates the real
+opening by nearly half.
+
 ### 6.6 The lumped network model
 
 Multi-driver support (§2.4) forces the lumped engine to be a **general network solver**
