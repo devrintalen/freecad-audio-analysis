@@ -12,13 +12,18 @@ FreeCAD = pytest.importorskip("FreeCAD")
 Part = pytest.importorskip("Part")
 
 from freecad.audio_analysis.cavity import (  # noqa: E402
+    BooleanFailure,
     CavityError,
+    collect_boundary_solids,
     collect_solids,
     describe_regions,
     enclosed_regions,
     extract_regions,
+    fuse_diagnostic,
+    geometry_diagnostics,
     make_envelope,
 )
+from freecad.audio_analysis.checks import Severity  # noqa: E402
 from freecad.audio_analysis.objects import make_analysis  # noqa: E402
 from freecad.audio_analysis.objects.cavity_object import ALL_ENCLOSED, make_cavity  # noqa: E402
 
@@ -309,3 +314,335 @@ class TestVerdictLeadsTheListing:
 
         text = describe_regions(extract_regions(boxes))
         assert "and 4 more" in text or "more" in text.splitlines()[-1]
+
+
+def fuzzy_box(doc, name="Fuzzy", tolerance=0.5):
+    """A solid whose tolerance has been widened, as a failed sweep leaves one.
+
+    This is the exact signature of the defect that cost a day: the shape draws correctly,
+    reports ``isValid()`` true, has the volume it should, and destroys any boolean it
+    takes part in.
+    """
+    obj = doc.addObject("Part::Feature", name)
+    shape = Part.makeBox(20.0, 20.0, 20.0)
+    shape.fixTolerance(tolerance)
+    obj.Shape = shape
+    doc.recompute()
+    return obj
+
+
+class TestUnionInvariant:
+    """The trip-wire: a union is never smaller than its largest part, nor bigger than the sum."""
+
+    def test_a_correct_union_passes(self, doc):
+        shell = hollow_box(doc)
+        sources = collect_boundary_solids([shell])
+        fused = sources[0].solid
+        assert fuse_diagnostic(sources, fused) is None
+
+    def test_a_union_smaller_than_its_largest_part_is_rejected(self, doc):
+        """The real failure: 439 cm3 of parts fused to 67, still reporting itself valid."""
+        big = hollow_box(doc, "Big", outer=50.0)
+        small = hollow_box(doc, "Small", outer=20.0, wall=3.0)
+        sources = collect_boundary_solids([big, small])
+
+        collapsed = Part.makeBox(1.0, 1.0, 1.0)
+        assert collapsed.isValid()  # exactly why this cannot be caught by isValid()
+
+        problem = fuse_diagnostic(sources, collapsed)
+        assert problem is not None
+        assert problem.severity is Severity.ERROR
+        assert problem.code == "fuse-failed"
+
+    def test_a_union_larger_than_the_sum_is_rejected(self, doc):
+        shell = hollow_box(doc)
+        sources = collect_boundary_solids([shell])
+        assert fuse_diagnostic(sources, Part.makeBox(500.0, 500.0, 500.0)) is not None
+
+    def test_an_empty_fuse_result_is_rejected(self, doc):
+        """Cap.fuse(Cushion) returned a shape with no solids at all."""
+        shell = hollow_box(doc)
+        sources = collect_boundary_solids([shell])
+        problem = fuse_diagnostic(sources, Part.Shape())
+        assert problem is not None
+        assert "empty shape" in problem.message
+
+    def test_the_diagnostic_quotes_both_bounds(self, doc):
+        big = hollow_box(doc, "Big", outer=50.0)
+        sources = collect_boundary_solids([big])
+        problem = fuse_diagnostic(sources, Part.makeBox(1.0, 1.0, 1.0))
+        # The numbers are what make the finding checkable rather than merely alarming.
+        assert "cm3" in problem.why
+        assert problem.remedy and problem.reference
+
+    def test_no_sources_is_not_a_failure(self):
+        assert fuse_diagnostic([], None) is None
+
+
+class TestPartDiagnostics:
+    def test_clean_parts_produce_no_findings(self, doc):
+        shell = hollow_box(doc)
+        assert geometry_diagnostics([shell]) == []
+
+    def test_clean_parts_survive_the_deep_check(self, doc):
+        shell = hollow_box(doc)
+        assert geometry_diagnostics([shell], deep=True) == []
+
+    def test_a_widened_tolerance_is_reported(self, doc):
+        fuzzy = fuzzy_box(doc)
+        assert fuzzy.Shape.isValid()  # the point: validity says nothing about this
+
+        found = geometry_diagnostics([fuzzy])
+        assert len(found) == 1
+        assert found[0].code == "part-tolerance-widened"
+        assert found[0].subject == fuzzy.Label
+        assert found[0].severity is Severity.WARNING
+
+    def test_the_tolerance_finding_explains_and_prescribes(self, doc):
+        finding = geometry_diagnostics([fuzzy_box(doc)])[0]
+        assert "1e-07" in finding.why or "default" in finding.why
+        assert "Check geometry" in finding.remedy
+
+    def test_a_tolerance_within_reason_is_not_reported(self, doc):
+        obj = doc.addObject("Part::Feature", "Ordinary")
+        shape = Part.makeBox(20.0, 20.0, 20.0)
+        shape.fixTolerance(1e-5)  # what an ordinary filleted part carries
+        obj.Shape = shape
+        doc.recompute()
+        assert geometry_diagnostics([obj]) == []
+
+    def test_solids_are_labelled_with_the_object_they_came_from(self, doc):
+        shell = hollow_box(doc, "Cushion")
+        sources = collect_boundary_solids([shell])
+        assert [s.label for s in sources] == ["Cushion"]
+
+    def test_several_solids_in_one_object_are_numbered(self, doc):
+        obj = doc.addObject("Part::Feature", "Pair")
+        obj.Shape = Part.makeCompound([
+            Part.makeBox(10.0, 10.0, 10.0),
+            Part.makeBox(10.0, 10.0, 10.0, FreeCAD.Vector(50.0, 0.0, 0.0)),
+        ])
+        doc.recompute()
+        labels = [s.label for s in collect_boundary_solids([obj])]
+        assert labels == ["Pair (solid 1)", "Pair (solid 2)"]
+
+    def test_collect_solids_still_returns_bare_solids(self, doc):
+        """The old signature is load-bearing for callers that only want geometry."""
+        shell = hollow_box(doc)
+        assert all(isinstance(s, Part.Shape) for s in collect_solids([shell]))
+
+
+class TestVerdictDoesNotRepeatAdviceAlreadyTaken:
+    """Telling someone to add the cap they just added is how the tool loses their trust."""
+
+    def test_uncapped_open_model_says_to_add_a_cap(self, doc):
+        shell = open_box(doc)
+        text = describe_regions(extract_regions([shell]), capped=False)
+        assert "Add a cap solid" in text
+
+    def test_capped_open_model_does_not_say_to_add_a_cap(self, doc):
+        shell = open_box(doc)
+        text = describe_regions(extract_regions([shell]), capped=True)
+        assert "Add a cap solid" not in text
+        assert "already supplied" in text
+
+    def test_capped_advice_names_the_real_remaining_causes(self, doc):
+        text = describe_regions(extract_regions([open_box(doc)]), capped=True)
+        assert "missing from Boundary" in text
+        assert "LeakPath" in text  # a gap may be a real leak, not a modelling error
+
+    def test_the_verdict_still_leads_the_listing(self, doc):
+        text = describe_regions(extract_regions([open_box(doc)]), capped=True)
+        assert "OPEN MODEL" in text.splitlines()[0]
+
+
+class TestCavityObjectReportsFailure:
+    def _cavity_over(self, doc, monkeypatch, error):
+        from freecad.audio_analysis.objects import cavity_object
+
+        analysis = make_analysis(doc)
+        cavity = make_cavity(doc, analysis)
+        cavity.Boundary = [hollow_box(doc)]
+
+        def boom(*args, **kwargs):
+            raise error
+
+        monkeypatch.setattr(cavity_object, "extract_regions", boom)
+        cavity.Proxy.extract(cavity)
+        return cavity
+
+    def test_a_broken_boolean_does_not_report_an_open_model(self, doc, monkeypatch):
+        """The whole point. This case used to read as 'OPEN MODEL -- add a cap'."""
+        from freecad.audio_analysis.checks import Diagnostic
+
+        failure = BooleanFailure([
+            Diagnostic(Severity.ERROR, "fuse-failed", "Union is impossible."),
+            Diagnostic(Severity.ERROR, "part-fails-boolean-check", "Bad.", subject="Cushion"),
+        ])
+        cavity = self._cavity_over(doc, monkeypatch, failure)
+
+        assert "EXTRACTION FAILED" in cavity.Regions
+        assert "OPEN MODEL" not in cavity.Regions
+        assert "add a cap" not in cavity.Regions.lower()
+
+    def test_the_responsible_part_is_named_in_diagnostics(self, doc, monkeypatch):
+        from freecad.audio_analysis.checks import Diagnostic
+
+        failure = BooleanFailure([
+            Diagnostic(Severity.ERROR, "part-fails-boolean-check", "Bad.", subject="Cushion"),
+        ])
+        cavity = self._cavity_over(doc, monkeypatch, failure)
+        assert "Cushion" in cavity.Diagnostics
+
+    def test_a_failed_extraction_produces_no_volume(self, doc, monkeypatch):
+        from freecad.audio_analysis.checks import Diagnostic
+
+        failure = BooleanFailure([Diagnostic(Severity.ERROR, "fuse-failed", "No.")])
+        cavity = self._cavity_over(doc, monkeypatch, failure)
+        assert cavity.Volume.getValueAs("mm^3").Value == pytest.approx(0.0)
+        assert cavity.Shape.isNull()
+
+    def test_ordinary_cavity_errors_still_report_plainly(self, doc, monkeypatch):
+        cavity = self._cavity_over(doc, monkeypatch, CavityError("no solids found"))
+        assert "no solids found" in cavity.Regions
+        assert cavity.Diagnostics == ""
+
+    def test_a_clean_extraction_leaves_diagnostics_empty(self, doc):
+        analysis = make_analysis(doc)
+        cavity = make_cavity(doc, analysis)
+        cavity.Boundary = [hollow_box(doc)]
+        cavity.Proxy.extract(cavity)
+        assert cavity.Diagnostics == ""
+        assert cavity.Volume.getValueAs("mm^3").Value == pytest.approx(64000.0, rel=1e-6)
+
+    def test_a_suspect_part_is_reported_even_when_extraction_succeeds(self, doc):
+        """A tolerance that survives today's boolean will not survive tomorrow's edit."""
+        analysis = make_analysis(doc)
+        cavity = make_cavity(doc, analysis)
+        shell = hollow_box(doc)
+        shell.Shape.fixTolerance(0.5)
+        cavity.Boundary = [shell]
+        cavity.Proxy.extract(cavity)
+        assert "part-tolerance-widened" in cavity.Diagnostics or cavity.Diagnostics
+
+    def test_the_object_reports_caps_aware_advice(self, doc):
+        analysis = make_analysis(doc)
+        cavity = make_cavity(doc, analysis)
+        cavity.Boundary = [open_box(doc)]
+        cavity.Caps = [cap_for(doc, name="WrongCap")]
+        cavity.Caps[0].Shape = Part.makeBox(1.0, 1.0, 1.0, FreeCAD.Vector(500.0, 0.0, 0.0))
+        doc.recompute()
+        cavity.Proxy.extract(cavity)
+        assert "Add a cap solid" not in cavity.Regions
+
+
+class TestPreflightSurfacesBoundaryDefects:
+    def test_a_fuzzy_boundary_part_is_raised_by_the_check_pass(self, doc):
+        from freecad.audio_analysis.checks import run_checks
+
+        analysis = make_analysis(doc)
+        cavity = make_cavity(doc, analysis)
+        cavity.Boundary = [fuzzy_box(doc)]
+        doc.recompute()
+
+        codes = [d.code for d in run_checks(analysis).diagnostics]
+        assert "part-tolerance-widened" in codes
+
+    def test_a_clean_cavity_raises_nothing_about_its_parts(self, doc):
+        from freecad.audio_analysis.checks import run_checks
+
+        analysis = make_analysis(doc)
+        cavity = make_cavity(doc, analysis)
+        cavity.Boundary = [hollow_box(doc)]
+        doc.recompute()
+
+        codes = [d.code for d in run_checks(analysis).diagnostics]
+        assert "part-tolerance-widened" not in codes
+        assert "cavity-extraction-failed" not in codes
+
+    def test_a_failed_extraction_blocks_the_solve(self, doc):
+        from freecad.audio_analysis.checks import run_checks
+
+        analysis = make_analysis(doc)
+        cavity = make_cavity(doc, analysis)
+        cavity.Boundary = [hollow_box(doc)]
+        doc.recompute()
+        # After the recompute, so AutoUpdate does not overwrite the state under test.
+        cavity.Regions = "EXTRACTION FAILED -- the boundary parts could not be combined"
+
+        report = run_checks(analysis)
+        assert "cavity-extraction-failed" in [d.code for d in report.diagnostics]
+        assert not report.can_solve
+
+
+class TestCutFailureNamesThePart:
+    """The union can pass its bounds check and still be too broken to subtract."""
+
+    def test_a_failed_cut_raises_boolean_failure_not_generic_advice(self, doc, monkeypatch):
+        from freecad.audio_analysis import cavity as cavity_module
+
+        shell = hollow_box(doc)
+
+        class Exploding:
+            BoundBox = Part.makeBox(200.0, 200.0, 200.0).BoundBox
+
+            def cut(self, other):
+                raise ValueError("Null shape")
+
+        monkeypatch.setattr(cavity_module, "make_envelope", lambda *a, **k: Exploding())
+        with pytest.raises(BooleanFailure) as caught:
+            extract_regions([shell])
+
+        codes = [d.code for d in caught.value.diagnostics]
+        assert "cut-failed" in codes
+        assert "refining the selection" not in str(caught.value)
+
+    def test_the_cut_diagnostic_blames_the_parts_not_the_selection(self):
+        from freecad.audio_analysis.cavity import cut_failure_diagnostic
+
+        finding = cut_failure_diagnostic(ValueError("Null shape"))
+        assert finding.severity is Severity.ERROR
+        assert "Null shape" in finding.message
+        assert "boundary parts" in finding.remedy
+
+
+class TestSuspectPartWithdrawsTheVerdict:
+    """An 'open' result from a known-defective part is not evidence of anything."""
+
+    def test_open_verdict_is_withdrawn_when_a_part_was_flagged(self, doc):
+        text = describe_regions(
+            extract_regions([open_box(doc)]), suspect_parts=["Cushion"]
+        )
+        assert "NO VERDICT" in text.splitlines()[0]
+        assert "OPEN MODEL" not in text
+        assert "Cushion" in text
+
+    def test_the_withdrawal_says_why_and_what_to_do(self, doc):
+        text = describe_regions(
+            extract_regions([open_box(doc)]), suspect_parts=["Cushion"]
+        )
+        assert "not evidence" in text
+        assert "extract again" in text
+
+    def test_a_genuine_open_model_still_gets_a_verdict(self, doc):
+        text = describe_regions(extract_regions([open_box(doc)]))
+        assert "OPEN MODEL" in text.splitlines()[0]
+
+    def test_a_found_cavity_is_reported_normally_even_if_a_part_is_flagged(self, doc):
+        text = describe_regions(
+            extract_regions([hollow_box(doc)]), suspect_parts=["Cushion"]
+        )
+        assert "NO VERDICT" not in text
+        assert "enclosed region" in text.splitlines()[0]
+
+    def test_the_object_withdraws_the_verdict_end_to_end(self, doc):
+        analysis = make_analysis(doc)
+        shell = open_box(doc, name="Cushion")
+        shell.Shape.fixTolerance(0.5)
+        cavity = make_cavity(doc, analysis)
+        cavity.Boundary = [shell]
+        cavity.Proxy.extract(cavity)
+
+        assert "NO VERDICT" in cavity.Regions
+        assert "Cushion" in cavity.Diagnostics
+        assert cavity.Volume.getValueAs("mm^3").Value == pytest.approx(0.0)

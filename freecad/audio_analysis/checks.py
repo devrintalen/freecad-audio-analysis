@@ -657,6 +657,45 @@ def check_element_validity(analysis: Any) -> Iterator[Diagnostic]:
 
 
 @check
+def check_cavity_boundary_geometry(analysis: Any) -> Iterator[Diagnostic]:
+    """Surface defects in the parts a cavity is cut from, before they become a volume.
+
+    A boundary part that cannot survive a boolean has no other symptom. It draws
+    correctly, FreeCAD calls it valid, and the only outward sign is a cavity that refuses
+    to close -- which looks exactly like a model someone forgot to cap. Raising it here
+    means the preflight pass says so in the same place as every other finding, rather than
+    leaving it to be inferred from a volume of zero.
+
+    Only the cheap scan runs: the thorough OpenCascade check costs about a second per
+    detailed part, and the extraction itself escalates to it when a fuse actually fails.
+    """
+    from freecad.audio_analysis.cavity import geometry_diagnostics
+    from freecad.audio_analysis.objects.cavity_object import AcousticCavity
+
+    for cavity in _find(analysis, AcousticCavity.Type):
+        parts = list(getattr(cavity, "Boundary", None) or [])
+        parts += list(getattr(cavity, "Caps", None) or [])
+        if not parts:
+            continue
+
+        yield from geometry_diagnostics(parts)
+
+        if str(getattr(cavity, "Regions", "")).startswith("EXTRACTION FAILED"):
+            yield Diagnostic(
+                severity=Severity.ERROR,
+                code="cavity-extraction-failed",
+                message="The last extraction could not combine this cavity's parts.",
+                why=(
+                    "No volume was produced, so anything downstream that reads this "
+                    "cavity is working from nothing rather than from a wrong number."
+                ),
+                remedy="See this cavity's Diagnostics property for the part responsible.",
+                reference="STRUCTURE.md §6.5",
+                subject=cavity.Label,
+            )
+
+
+@check
 def check_cavity_dimensions_are_measured(analysis: Any) -> Iterator[Diagnostic]:
     """A volume with no measured span has its limit guessed, and guessed generously."""
     report, labels = analysis_validity(analysis)

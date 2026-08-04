@@ -641,6 +641,64 @@ rather than designed features. Extraction has to preserve them, and the workbenc
 warn when a cavity contains a gap thinner than the boundary layer at the top sweep
 frequency.
 
+#### Booleans fail silently, and the failure is indistinguishable from an open model
+
+The most expensive failure mode found so far, and the reason cavity extraction validates
+its own arithmetic. A defective boundary part does not raise: it draws correctly in the 3D
+view, reports `isValid()` true, has the volume it should, and quietly destroys every
+boolean it takes part in.
+
+Observed on the two-way cup. One earpad, built by a `PartDesign::AdditivePipe` sweeping two
+*different* sections along a **closed** circular spine, could not close its own seam, so
+OpenCascade forced it shut by inflating four seam vertices to tolerances of 8–11 mm — a
+part "fuzzy" at half a millimetre against OCC's 1e-7 mm default. The consequences ran
+downhill from there:
+
+| Stage | What happened |
+|---|---|
+| `Shape.isValid()` | **true** — it only checks topological self-consistency |
+| `Shape.check(True)` | 12× `BOPAlgo SelfIntersect`, 4× `TooSmallEdge` — never called |
+| Fuse of the four boundary parts | 439.7 cm³ of input → **67.6 cm³**, reported as one valid solid |
+| Subtract from the envelope | removed almost nothing; only the exterior came back |
+| Verdict shown to the user | *"OPEN MODEL — no enclosed cavity. Add a cap solid across the opening."* |
+
+The model was sealed and already capped. The tool sent its user looking for a leak that did
+not exist, which is precisely the confident-wrong-answer failure §6.8 exists to prevent —
+arrived at through geometry rather than through physics.
+
+Three defences, ordered by what they cost:
+
+1. **The union invariant, always on.** A union is never smaller than its largest part nor
+   larger than the sum of them. Both bounds are exact, so this is a free and completely
+   reliable trip-wire against a fuse that silently collapsed. When it trips, the extraction
+   refuses to report any geometric verdict at all.
+2. **A tolerance scan, always on.** Any part above `SUSPECT_TOLERANCE_MM` (1e-3 mm) is
+   reported by name with its worst vertex. One micron is acoustically nothing — the viscous
+   boundary layer at 1 kHz is seventy times larger — so this is purely a numerical concern,
+   and the threshold sits well above the ~1e-5 mm ordinary filleted parts carry. On the case
+   above this alone names the culprit in about a tenth of a second.
+3. **OCC's boolean-operation check, on failure only.** `Shape.check(True)` costs roughly a
+   second per detailed part — as much as the fuse itself — so it is not run speculatively.
+   It runs when the invariant trips *or* when the subtraction throws, and its job is to name
+   the responsible part.
+
+The invariant is necessary but not sufficient: the same broken earpad in a different
+combination fused to 263.9 cm³, which sits legitimately inside `[196.4, 439.7]`, and then
+made `cut()` raise `Null shape`. So both failure paths escalate to the same named
+diagnosis, and neither is allowed to emit generic advice like "try refining the selection",
+which is not something a user can act on.
+
+Two rules follow for the report text. **Never repeat advice the user has already taken** —
+suggesting a cap to someone who supplied one is how the tool loses credibility on the one
+message that most needed to be trusted. And **withdraw the verdict when a part is known to
+be defective**: an open result is what a broken part looks like, so it is reported as
+`NO VERDICT` with the part named, not as evidence about the geometry.
+
+Findings are `Diagnostic` objects (§6.8), written to the cavity's `Diagnostics` property,
+echoed to the Report view, and re-raised by the preflight pass through
+`check_cavity_boundary_geometry` so a defect blocks a solve rather than merely producing a
+volume of zero.
+
 ### 6.6 The lumped network model
 
 Multi-driver support (§2.4) forces the lumped engine to be a **general network solver**
@@ -885,7 +943,7 @@ annotates the results, `INFO` records an assumption. The catalogue grows per tie
 | Tier | Checks |
 |---|---|
 | 0 | medium present and singular; temperature/pressure plausible (catches Celsius-into-kelvin and the kPa trap); analysis non-empty |
-| 1 | every driver has both acoustic ports connected; no floating nodes; sweep versus lumped validity; excursion beyond Xmax; crossover loads a real impedance |
+| 1 | every driver has both acoustic ports connected; no floating nodes; sweep versus lumped validity; excursion beyond Xmax; crossover loads a real impedance; boundary parts fit for booleans, and a failed cavity extraction blocks the solve (§6.5) |
 | 2 | fluid domain closed; unclassified openings listed for the user to call leak or artefact; mesh resolves the top frequency |
 | 3 | boundary layers resolved in narrow gaps; gaps thinner than δ_v flagged; screen impedances present where geometry implies damping |
 | 4 | far-field distance genuinely far field; BEM mesh adequate at the top frequency |

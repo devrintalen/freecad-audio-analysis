@@ -23,7 +23,14 @@ import os
 import sys
 import time
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "scripts"))
+
+import devpath  # noqa: E402
+
+# Putting the repository first in sys.path is not enough when the workbench is also
+# installed as an addon: FreeCAD has already assembled the ``freecad`` namespace from the
+# Mod directory. devpath pins it to this working tree.
+devpath.setup(require_freecad=True)
 
 import FreeCAD as App  # noqa: E402
 import Part  # noqa: E402
@@ -33,29 +40,6 @@ from freecad.audio_analysis.physics import air  # noqa: E402
 
 #: Object types that represent real geometry rather than datums or joints.
 GEOMETRY_TYPES = ("App::Link", "Part::Feature", "Part::FeaturePython", "PartDesign::Body")
-
-#: Ignore slivers left by boolean operations.
-MIN_SOLID_VOLUME_MM3 = 1e-6
-
-
-def collect_solids(doc: App.Document) -> list[Part.Solid]:
-    """Every valid solid in the document, with placements applied.
-
-    Datum planes and joint objects carry null or nonsense shapes -- an unbounded plane
-    reports an absurd volume -- and a boolean against them fails outright, so they are
-    filtered here rather than at the point of use.
-    """
-    solids: list[Part.Solid] = []
-    for obj in doc.Objects:
-        if obj.TypeId not in GEOMETRY_TYPES:
-            continue
-        shape = getattr(obj, "Shape", None)
-        if shape is None or shape.isNull():
-            continue
-        solids.extend(
-            s for s in shape.Solids if s.isValid() and s.Volume > MIN_SOLID_VOLUME_MM3
-        )
-    return solids
 
 
 def report_parts(doc: App.Document) -> None:
@@ -105,19 +89,56 @@ def report_mesh_requirements(largest_dimension_mm: float) -> None:
           f"width is loss-dominated")
 
 
+def geometry_objects(doc: App.Document) -> list[App.DocumentObject]:
+    """The document objects that carry real geometry, datums and joints excluded."""
+    return [o for o in doc.Objects if o.TypeId in GEOMETRY_TYPES]
+
+
 def report_cavity(doc: App.Document, padding_mm: float) -> None:
     """Try to extract a fluid domain by subtracting the parts from a bounding solid."""
-    solids = collect_solids(doc)
+    from freecad.audio_analysis.cavity import (
+        collect_boundary_solids,
+        fuse_diagnostic,
+        geometry_diagnostics,
+    )
+
+    objects = geometry_objects(doc)
+    sources = collect_boundary_solids(objects)
+    solids = [s.solid for s in sources]
     if not solids:
         print("\nNo solids found; cannot attempt cavity extraction.")
         return
 
     print(f"\nCavity extraction ({len(solids)} solids)")
 
+    # Before trusting any boolean, ask whether the parts can survive one. A part with a
+    # widened tolerance destroys a fuse without raising, and the result then looks exactly
+    # like an open model -- see STRUCTURE.md 6.5.
+    start = time.time()
+    findings = geometry_diagnostics(objects)
+    print(f"  part check: {time.time() - start:.1f} s -> "
+          f"{len(findings) or 'no'} finding(s)")
+    for finding in findings:
+        print("  " + finding.format().replace("\n", "\n  "))
+
     start = time.time()
     fused = solids[0].multiFuse(solids[1:]) if len(solids) > 1 else solids[0]
     print(f"  fuse: {time.time() - start:.1f} s -> {len(fused.Solids)} solids, "
           f"{fused.Volume / 1000:.1f} cm3 of material")
+
+    broken = fuse_diagnostic(sources, fused)
+    if broken is not None:
+        print()
+        print("  " + broken.format().replace("\n", "\n  "))
+        print()
+        print("  Running the thorough check to find the part responsible "
+              "(about a second per part)...")
+        for finding in geometry_diagnostics(objects, deep=True):
+            print("  " + finding.format().replace("\n", "\n  "))
+        print()
+        print("  Nothing below this point would mean anything: the geometry being cut")
+        print("  is not the geometry you modelled. Stopping here.")
+        return
 
     bb = fused.BoundBox
     envelope = Part.makeBox(
