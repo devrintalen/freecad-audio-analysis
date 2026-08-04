@@ -1,8 +1,16 @@
 # FreeCAD Audio Analysis Workbench — Structure & Capability Plan
 
-> Status: **design document, no code yet.** This file defines what the workbench is
-> eventually meant to do, which existing FOSS solvers do the heavy lifting, and how all
-> of it surfaces as objects and commands inside FreeCAD.
+> **This is the design document and the source of truth** for what the workbench is meant
+> to do, which existing FOSS solvers do the heavy lifting, and how all of it surfaces as
+> objects and commands inside FreeCAD. A change that contradicts it should update it.
+>
+> Status: **Tiers 0 and 1 are implemented and tested** (§5); Tiers 2–5 are still design.
+> Nothing has yet been correlated against a physical measurement, so results are
+> unvalidated.
+>
+> Working conventions, the development loop and the state of the machine live in
+> `CLAUDE.md`; installing the external solvers is `docs/SETUP.md`; benchmark results as
+> they stand are `validation/README.md`.
 
 ---
 
@@ -186,7 +194,7 @@ problem class.
 | Tool | Licence | Role here | Maturity |
 |---|---|---|---|
 | **[Elmer FEM](https://elmerfem.org/)** | LGPL (lib) / GPL | Primary 3D solver: Helmholtz, thermoviscous acoustics, elasticity, structural–acoustic coupling, magnetostatics | Mature, actively developed, **already shipped with FreeCAD's FEM workbench** |
-| **[Gmsh](https://gmsh.info/)** | GPL | Meshing, incl. boundary-layer refinement | Mature, **already bundled in FreeCAD** |
+| **[Gmsh](https://gmsh.info/)** | GPL | Meshing, incl. boundary-layer refinement | Mature; FreeCAD ships the *driver* (`femmesh.gmshtools`) but not the binary, which is installed separately |
 | **[NumCalc](https://github.com/Any2HRTF/Mesh2HRTF)** (from Mesh2HRTF) | EUPL v1.2+ | Exterior BEM with Burton–Miller + ML-FMM; the fast path for radiation/directivity/HRTF | Mature, purpose-built for acoustics, actively developed |
 | **[Bempp-cl](https://bempp.com/)** | Permissive (verify per release) | Alternative/second-opinion BEM, scriptable from Python, good for interior–exterior coupling | Active, research-grade |
 | **[ngspice](https://ngspice.sourceforge.io/)** | BSD-style | Crossover networks (genuinely R/L/C), netlist import, and independent cross-check of the native solver — *not* the primary lumped engine, see §6.6 | Very mature |
@@ -262,6 +270,15 @@ can *extract* them (§6.10), closing the loop.
 ## 5. Capability tiers (development order)
 
 Each tier is independently useful. Do not start tier N+1 before tier N is validated.
+
+| Tier | Capability | Engine | Status |
+|---|---|---|---|
+| 0 | Skeleton: workbench, document objects, solver discovery | — | **implemented** |
+| 1 | Lumped-element modelling, multi-driver, crossovers | native NumPy | **implemented**, benchmarks passing |
+| 2 | Lossless interior acoustics | Elmer Helmholtz | design |
+| 3 | Thermoviscous acoustics | Elmer LNS | design |
+| 4 | Exterior radiation, coupled structure | NumCalc BEM, Elmer | design |
+| 5 | Nonlinear, aeroacoustic, optimisation | OpenFOAM, native | stretch |
 
 ### Tier 0 — Skeleton
 Installable external workbench; addon-manager metadata; document object base classes with
@@ -453,22 +470,8 @@ cavity *shape* starts to matter — above roughly 1 kHz for an over-ear cup, whe
 volume stops behaving as a lumped compliance (§2.4) — or when the question is specifically
 about the seal, leakage, or isolation.
 
-#### What this means for the driver_cup model
-
-Measured on the real assembly: the cup is a shell filling 10% of its bounding box, **open
-at the ear side** (Y ≈ −1) and **closed at the back** (Y ≈ 44, an essentially full disc).
-So the ear plane is well defined and a cap there is straightforward.
-
-But capping the ear plane alone does *not* seal the volume — extraction still finds
-interior and exterior connected. There are further openings: gaps between the cup, plate
-and retainers, and reduced wall sections around Y ≈ 20. Acoustically that is not
-necessarily a modelling defect — leakage dominates headphone bass response, and a real
-cup does leak — but it means the fluid domain must be **constructed deliberately** rather
-than extracted automatically. In practice: cap the ear plane, then either close the
-incidental gaps or declare them as `LeakPath` elements with a measured or estimated
-impedance. Deciding which gaps are real leaks and which are CAD artefacts is a judgement
-the user has to make, so the extraction command must present them rather than silently
-filling them.
+Which route a given model needs is a geometry question, so the practical consequences for
+the driver_cup assembly are worked through in §6.5.
 
 A headphone model must terminate into something ear-shaped; "open air" is meaningless
 (§2.2). There are **two distinct geometry needs**, and they have different sources:
@@ -630,6 +633,19 @@ confirms the capping requirement is the normal case, not an edge case: the ear-s
 opening leaves no closed cavity, so the acoustic domain is only defined once the ear
 simulator face (or a baffle, for a loudspeaker) closes it. The extraction command must
 therefore *ask* for the capping face rather than trying to infer it.
+
+**Capping the obvious opening is not the end of it.** On the same assembly the cup is a
+shell filling 10% of its bounding box, **open at the ear side** (Y ≈ −1) and **closed at
+the back** (Y ≈ 44, an essentially full disc), so the ear plane is well defined and a cap
+there is straightforward — and capping it still does not seal the volume. There are
+further openings: gaps between cup, plate and retainers, and reduced wall sections around
+Y ≈ 20. Acoustically that is not necessarily a modelling defect — leakage dominates
+headphone bass response, and a real cup does leak — but it means the fluid domain must be
+**constructed deliberately** rather than extracted automatically. In practice: cap the ear
+plane, then either close the incidental gaps or declare them as `LeakPath` elements with a
+measured or estimated impedance. Deciding which gaps are real leaks and which are CAD
+artefacts is a judgement the user has to make, so the extraction command must present them
+rather than silently filling them.
 
 Mesh sizing for that model is undemanding: 2.15 mm elements at 20 kHz, about 49 across the
 105 mm cup. The cost driver will be the thin-gap resolution of Tier 3, not the cavity.
@@ -1013,7 +1029,7 @@ Scalar metrics are computed from the **trusted** portion of a curve only, so a f
 
 A single curve says what a design does. Two curves say what a *decision* does.
 `ParameterSweep` runs a study across a value and overlays the family, with a delta view
-against a chosen reference. This is how "what do my rear vents do" gets answered (§6.7),
+against a chosen reference. This is how "what do my rear vents do" gets answered (§6.8),
 and it is the feature most likely to change how someone designs.
 
 Three details make it trustworthy rather than merely convenient:
@@ -1059,40 +1075,53 @@ value sits.
 
 ## 7. Repository layout
 
+Entries marked *(planned)* do not exist yet; everything else is in the tree today.
+
 ```
 freecad-audio-analysis/
 ├── package.xml                 # Addon Manager metadata
 ├── LICENSE                     # LGPL-2.1+
-├── README.md
-├── STRUCTURE.md                # this file
+├── README.md                   # what a user can do today
+├── STRUCTURE.md                # this file — the design
+├── CLAUDE.md                   # working conventions and the dev loop
 ├── InitGui.py                  # workbench registration (FreeCAD entry point)
 ├── Init.py
 ├── freecad/
 │   └── audio_analysis/
-│       ├── __init__.py
+│       ├── workbench.py        # toolbar/menu assembly
+│       ├── builder.py          # constructs a network in a document
+│       ├── templates.py        # the §6.8 starting topologies
+│       ├── checks.py           # preflight diagnostics (§6.8)
+│       ├── cavity.py           # fluid-domain extraction (§6.5)
+│       ├── geometry.py         # shape access, global placement resolution
 │       ├── commands/           # one module per toolbar command
 │       ├── objects/            # FeaturePython proxies (the §6.2 tree)
-│       ├── viewproviders/      # ViewProvider classes + task panel hooks
-│       ├── taskpanels/         # Qt UI + .ui files
+│       ├── viewproviders/      # ViewProvider classes + tree topology (§6.6)
 │       ├── physics/            # solver-independent models
 │       │   ├── air.py          # ρ, c, μ, κ vs T / P / humidity
-│       │   ├── lumped.py       # network assembly + frequency solve
-│       │   ├── porous.py       # Johnson–Champoux–Allard, Delany–Bazley
-│       │   ├── slits.py        # analytic viscothermal slit/tube impedance
-│       │   └── analytic.py     # piston, sphere, tube — validation references
+│       │   ├── network.py      # nodal assembly + frequency solve (§6.6)
+│       │   ├── driver.py       # electro-mechano-acoustic driver model
+│       │   ├── crossover.py    # active and passive filter branches
+│       │   ├── validity.py     # lumped validity limits, attributed (§6.6)
+│       │   ├── units.py        # the *only* mm↔SI conversion point
+│       │   ├── porous.py       # (planned) Johnson–Champoux–Allard, Delany–Bazley
+│       │   ├── slits.py        # (planned) analytic viscothermal slit/tube impedance
+│       │   └── analytic.py     # (planned) piston, sphere, tube references
+│       ├── results/            # curve container, target curves, summary, plotting, export
 │       ├── solvers/
-│       │   ├── base.py         # common job interface: prepare/run/parse
-│       │   ├── elmer/          # SIF writer, mesh export, result reader
-│       │   ├── numcalc/        # BEM input writer + result reader
-│       │   └── spice/          # netlist writer for ngspice
-│       ├── meshing/            # Gmsh driver, boundary-layer sizing heuristics
-│       ├── results/            # curve/field containers, smoothing, export
-│       ├── plotting/           # matplotlib panels
-│       ├── resources/          # icons, translations, material libraries
-│       └── tests/
-├── examples/                   # worked FCStd models per tier
-├── validation/                 # benchmark cases + expected results + tolerances
-└── docs/
+│       │   ├── discovery.py    # binary discovery + graceful degradation
+│       │   ├── base.py         # (planned) common job interface: prepare/run/parse
+│       │   ├── elmer/          # (planned) SIF writer, mesh export, result reader
+│       │   ├── numcalc/        # (planned) BEM input writer + result reader
+│       │   └── spice/          # (planned) netlist writer for ngspice
+│       ├── meshing/            # (planned) Gmsh driver, boundary-layer sizing
+│       ├── taskpanels/         # (planned) Qt UI + .ui files
+│       └── resources/          # (planned) icons, translations, material libraries
+├── tests/                      # unit + FreeCAD integration (the latter skips if absent)
+├── validation/                 # benchmark cases + references + tolerances (§9)
+├── examples/                   # runnable studies; worked FCStd models per tier
+├── scripts/                    # check_env.py, devpath.py
+└── docs/                       # SETUP.md
 ```
 
 ---
@@ -1138,7 +1167,11 @@ Requirements on this layer:
 ## 9. Verification and validation
 
 Every tier ships with benchmarks whose answers are known independently. Stored under
-`validation/` with tolerances and run in CI where possible.
+`validation/` with tolerances and run in CI where possible. The table below is the planned
+set; **`validation/README.md` records what actually passes today and by how much** — Tier 1
+agrees with closed-form theory to better than 0.03% and with ngspice to about 3 ppm. A
+reference is a closed-form solution, a published measurement, or a different solver; never
+a previous run of this code.
 
 | Case | Reference |
 |---|---|
@@ -1178,30 +1211,25 @@ headphone early, and treat that correlation as the acceptance test for Tier 3.
 
 ---
 
-## 11. Current environment
+## 11. Dependencies and baseline
 
-Surveyed 2026-08-02 on the development machine:
+FreeCAD **1.1** or newer is the baseline: the FEM workbench core was substantially reworked
+for 1.0 to make adding solvers easier, which is exactly the seam we hook into.
 
-| Component | Status |
+Each tier adds binaries, and no tier is allowed to break the ones below it — Tier 1 must run
+with nothing installed beyond FreeCAD and NumPy:
+
+| From tier | Needs |
 |---|---|
-| FreeCAD | **1.1.1** at `/usr/bin/FreeCAD`, FEM module present at `/usr/lib64/freecad/Mod/Fem` |
-| ngspice | installed (`/usr/bin/ngspice`) |
-| NumPy / SciPy | 2.4.6 / 1.17.1 |
-| Gmsh | **not on PATH** — FreeCAD ships only the driver (`Mod/Fem/femmesh/gmshtools.py`), not the binary. `pip install gmsh` supplies both binary and Python API, and is already an `acoupy_ears` dependency |
-| Elmer (`ElmerSolver`, `ElmerGrid`) | **not installed** — required from Tier 2 onward |
-| NumCalc | **not installed** — required from Tier 4 onward |
+| 0–1 | FreeCAD, NumPy/SciPy, matplotlib; ngspice only for cross-check benchmarks |
+| 2 | Gmsh binary, `ElmerGrid`, `ElmerSolver` |
+| 3 | the same, plus `acoupy_ears` for P.57 geometry (§6.4) |
+| 4 | NumCalc, `sofar` |
+| 5 | OpenFOAM |
 
-FreeCAD 1.1 is a good baseline: the FEM workbench core was substantially reworked for 1.0
-to make adding solvers easier, which is exactly the seam we hook into.
-
-## 12. Immediate next steps
-
-1. Install Elmer and Gmsh; confirm FreeCAD's FEM workbench can drive them end to end on a
-   stock example. This validates the toolchain before we depend on it.
-2. Build Tier 0: installable skeleton workbench, one analysis container, one command.
-3. Build Tier 1 lumped engine + response plot, validated against sealed/vented box theory.
-   This needs nothing beyond what is already installed.
-4. Only then start the Elmer SIF writer.
+What is installed on the development machine, and how to install what is not, belongs in
+`CLAUDE.md` and `docs/SETUP.md` rather than here; `python3 scripts/check_env.py` reports the
+live state per tier.
 
 ---
 
