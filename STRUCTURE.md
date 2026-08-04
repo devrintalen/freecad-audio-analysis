@@ -758,6 +758,24 @@ rather than where it sits in the product. Commands taking sub-element picks use
 `getSelectionEx("", 0)` and keep the full `Body004.PolarPattern001.Edge148` path, which
 `resolve_reference` walks with `getSubObject` and the assembly transform applied.
 
+**A sub-element path is not `path.dot.Element`.** The third trap, and the one that looked
+most like a modelling error. A GUI pick inside an assembly does not arrive as
+`Body004.PolarPattern001.Edge148` but as
+
+```
+Body004.PolarPattern001.;#2460:f;:G2#2bdc;CUT;:H-87b:d,E;:H87b,E.Edge148
+```
+
+— the middle segment is FreeCAD's topological-naming element map, and **it contains dots**.
+Splitting at the last dot therefore leaves part of that hash in the object path, which
+resolves to the picked edge on its own rather than to the part: no faces, no wires, and a
+report that a perfectly good rim edge *"is not part of any closed loop"*. Use
+`GeoFeature.resolveSubElement`, which returns `(object, mapped_name, element_name)` and
+knows where the boundary actually is. A returned `?Edge148` means the mapped name has gone
+stale and FreeCAD is offering the plain index as its best guess; take it, since a stale
+topological name is a reason to re-pick, not to refuse geometry that is probably still
+right. Keep the hash out of anything the user reads.
+
 **Measured on the driver_cup cup.** Enumerating the inner wires of `Body004` finds 25
 mouths: the ear-side rim (79.2 cm², a 16-edge planar loop), 8 vent slots of 177.2 mm² each
 seen from both ends, and 8 screw holes. Capping one mouth per opening and extracting against

@@ -51,6 +51,7 @@ import math
 from dataclasses import dataclass
 from typing import Any, Sequence
 
+import FreeCAD
 import Part
 
 #: Cap thickness in mm. Straddles the opening plane, half on each side.
@@ -108,31 +109,91 @@ def _label(obj: Any) -> str:
     return getattr(obj, "Label", None) or getattr(obj, "Name", "object")
 
 
+def split_subname(obj: Any, subname: str) -> tuple[str, str]:
+    """Split ``subname`` into ``(object_path, element_name)``.
+
+    This is the trap that made a valid pick look like a broken one. A GUI selection inside
+    an assembly does not look like ``"Body004.PolarPattern001.Edge148"`` but like ::
+
+        Body004.PolarPattern001.;#2460:f;:G2#2bdc;CUT;:H-87b:d,E;:H87b,E.Edge148
+
+    The middle segment is FreeCAD's topological-naming element map, and **it contains
+    dots**. Cutting at the last dot therefore leaves part of that hash in the object path,
+    which then resolves to the picked edge alone rather than to the part -- no faces, no
+    wires, and a report that a perfectly good rim edge belongs to no closed loop.
+
+    ``resolveSubElement`` knows where the boundary really is, so it does the splitting and
+    the hand-rolled version is only the fallback for objects that lack it.
+
+    A ``"?Edge148"`` coming back means the mapped name could not be found -- the feature
+    was rebuilt since the pick -- and FreeCAD is offering the plain index as its best
+    guess. That guess is taken: a stale topological name is a reason to re-pick the edge,
+    not a reason to refuse geometry that is very probably still right.
+    """
+    if hasattr(obj, "resolveSubElement"):
+        try:
+            _, mapped, element = obj.resolveSubElement(subname, False)
+            element = (element or "").lstrip("?")
+            if mapped and element and subname.endswith(mapped):
+                return subname[: len(subname) - len(mapped)], element
+        except Exception:  # noqa: BLE001 -- fall through to the naive split
+            pass
+
+    element = subname.rsplit(".", 1)[-1]
+    return subname[: len(subname) - len(element)], element
+
+
+def reference_label(obj: Any, subname: str) -> str:
+    """``"Assembly.Body004.PolarPattern001.Edge148"`` -- the pick, minus the element map.
+
+    The raw subname carries a topological-naming hash that is meaningless to read and long
+    enough to bury the rest of the line. What the user needs from a report is which part
+    and which edge.
+    """
+    path, element = split_subname(obj, subname)
+    return f"{_label(obj)}.{path}{element}"
+
+
+def placed_owner_shape(obj: Any, path: str) -> Any | None:
+    """The shape of the object at ``path``, transformed into the frame it is seen in.
+
+    ``getSubObject`` applies the accumulated placement itself, so the shape comes back
+    already assembled -- which is why the transform must *not* be applied a second time by
+    hand. An empty path means ``obj`` itself.
+    """
+    if not path:
+        shape = getattr(obj, "Shape", None)
+        return shape if _usable(shape) else None
+    if not hasattr(obj, "getSubObject"):
+        return None
+    try:
+        shape = obj.getSubObject(path)
+    except Exception:  # noqa: BLE001 -- not every object supports sub-object paths
+        return None
+    return shape if _usable(shape) else None
+
+
 def resolve_reference(obj: Any, subname: str) -> tuple[Any, Any]:
     """Resolve ``subname`` to ``(owner_shape, sub_shape)``, both in the same frame.
 
-    ``subname`` may be a plain element name (``"Edge148"``) or a path through an assembly
-    (``"Body004.PolarPattern001.Edge148"``), which is what selecting inside an assembly
-    actually produces. The dotted form cannot be resolved by ``Shape.getElement`` — the
-    assembly's own shape has no edge by that name — so ``getSubObject`` is tried first and
-    the flat lookup is the fallback.
+    ``subname`` may be a plain element name (``"Edge148"``), a path through an assembly, or
+    that path with an element-map hash embedded in it — see :func:`split_subname`.
 
-    Both halves come from the same strategy deliberately. Mixing them would return an owner
-    in one coordinate frame and an edge in another, and the loop search would then silently
-    match nothing (STRUCTURE.md §6.5 on placements).
+    The element is always looked up *within the owner shape* rather than resolved by a
+    second, independent call. That is what keeps the two halves in one coordinate frame:
+    resolved separately they can come back as an owner in the part's frame and an edge in
+    the assembly's, and the loop search then silently matches nothing instead of failing
+    (STRUCTURE.md §6.5 on placements).
     """
     if not subname:
         raise CapError(f"{_label(obj)}: no sub-element named in the reference")
 
-    element = subname.rsplit(".", 1)[-1]
-    prefix = subname[: len(subname) - len(element)]
+    path, element = split_subname(obj, subname)
 
-    if hasattr(obj, "getSubObject"):
+    owner = placed_owner_shape(obj, path)
+    if owner is not None:
         try:
-            sub = obj.getSubObject(subname)
-            owner = obj.getSubObject(prefix) if prefix else getattr(obj, "Shape", None)
-            if _usable(sub) and _usable(owner):
-                return owner, sub
+            return owner, owner.getElement(element)
         except Exception:  # noqa: BLE001 -- fall through to the flat lookup
             pass
 
@@ -410,7 +471,7 @@ def openings_from_references(references: Any, propagate: bool = True) -> list[Op
             raise CapError(f"malformed geometry reference: {entry!r}") from exc
         for name in [names] if isinstance(names, str) else (names or ()):
             owner, sub = resolve_reference(obj, name)
-            resolved.append((f"{_label(obj)}.{name}", owner, sub))
+            resolved.append((reference_label(obj, name), owner, sub))
 
     if not resolved:
         raise CapError(

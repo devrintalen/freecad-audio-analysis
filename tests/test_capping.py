@@ -27,7 +27,9 @@ from freecad.audio_analysis.capping import (  # noqa: E402
     grow_face,
     loop_for_edge,
     openings_from_references,
+    reference_label,
     resolve_reference,
+    split_subname,
     wires_from_edges,
 )
 from freecad.audio_analysis.cavity import enclosed_regions, extract_regions  # noqa: E402
@@ -314,6 +316,36 @@ class TestReferences:
         owner, sub = resolve_reference(shell, f"Edge{index}")
         assert isinstance(sub, Part.Edge)
         assert len(owner.Faces) == len(shell.Shape.Faces)
+
+    def test_an_element_map_hash_in_the_path_does_not_break_the_split(self, doc):
+        """What a GUI pick inside an assembly actually looks like.
+
+        FreeCAD hands back ``Body004.PolarPattern001.;#2460:f;...;:H87b,E.Edge148``, and
+        the element-map segment in the middle contains dots. Splitting the path at the
+        last dot swallows part of that hash, the "owner" resolves to the picked edge alone
+        -- no faces, no wires -- and the command reports that a perfectly good rim edge
+        belongs to no closed loop.
+        """
+        shell = bored(doc)
+        [index] = circular_rim_edges(shell)
+        mapped = f";#2460:f;:G2#2bdc;CUT;:H-87b:d,E;:H87b,E.Edge{index}"
+
+        assert split_subname(shell, mapped) == ("", f"Edge{index}")
+
+        owner, edge = resolve_reference(shell, mapped)
+        assert len(owner.Faces) == len(shell.Shape.Faces)
+        assert closed_loops_containing(owner, edge)
+
+    def test_the_element_map_is_kept_out_of_the_report(self, doc):
+        """A hash long enough to bury the rest of the line helps nobody read a report."""
+        shell = bored(doc)
+        [index] = circular_rim_edges(shell)
+        mapped = f";#2460:f;:G2#2bdc;CUT;:H-87b:d,E;:H87b,E.Edge{index}"
+
+        assert reference_label(shell, mapped) == f"{shell.Label}.Edge{index}"
+
+        [opening] = openings_from_references([(shell, (mapped,))])
+        assert "#2460" not in opening.describe()
 
     def test_a_stale_name_says_so(self, doc):
         shell = bored(doc)
