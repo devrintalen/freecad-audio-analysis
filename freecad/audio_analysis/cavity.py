@@ -51,6 +51,15 @@ DEFAULT_MINIMUM_VOLUME_MM3 = 1.0
 #: How far the automatic envelope stands off the parts, in mm.
 DEFAULT_PADDING_MM = 2.0
 
+#: Default for the largest opening a user means to treat as closed, in mm.
+#:
+#: Not yet applied to the geometry -- see the ``MaxOpening`` property and STRUCTURE.md
+#: §6.5. Half a millimetre is the scale at which the distinction stops being arbitrary: a
+#: slot much below it is thermoviscously dominated and behaves as a resistive leak rather
+#: than an open port, so treating it as sealed and modelling it as a ``LeakPath`` is
+#: closer to the physics than leaving the cavity open.
+DEFAULT_MAX_OPENING_MM = 0.5
+
 #: A region whose bounding box comes within this of the envelope's is treated as the
 #: exterior. Generous, because the exterior wraps the parts and always reaches the edge.
 EXTERIOR_TOLERANCE_MM = 1e-6
@@ -280,8 +289,15 @@ def geometry_diagnostics(
     OpenCascade boolean-operation check, which is thorough and costs about a second per
     detailed part, so it is reserved for the case where something has already failed.
     """
+    return diagnostics_for_solids(collect_boundary_solids(objects), deep=deep)
+
+
+def diagnostics_for_solids(
+    sources: Sequence[BoundarySolid], *, deep: bool = False
+) -> list[Diagnostic]:
+    """The same findings, for solids a caller has already collected and labelled."""
     diagnostics: list[Diagnostic] = []
-    for source in collect_boundary_solids(objects):
+    for source in sources:
         tolerance = tolerance_diagnostic(source)
         if tolerance is not None:
             diagnostics.append(tolerance)
@@ -398,6 +414,31 @@ def extract_regions(
             "no solids found in the selected objects. Cavity extraction needs the parts "
             "that bound the air -- datum planes and joints carry no volume."
         )
+    return extract_regions_from_solids(
+        sources, envelope, padding=padding, minimum_volume=minimum_volume
+    )
+
+
+def extract_regions_from_solids(
+    sources: Sequence[BoundarySolid],
+    envelope: Any = None,
+    *,
+    padding: float = DEFAULT_PADDING_MM,
+    minimum_volume: float = DEFAULT_MINIMUM_VOLUME_MM3,
+) -> list[CavityRegion]:
+    """The same extraction, but from solids that have already been collected and placed.
+
+    Split out because a solid's placement and the object it belongs to cannot both be
+    recovered from a container's flattened ``Shape``. A caller that has walked an assembly
+    itself -- :mod:`~freecad.audio_analysis.seeding` does -- arrives holding labelled,
+    correctly placed solids, and re-deriving them from objects here would throw that away
+    and reintroduce the local-coordinates trap it just avoided.
+    """
+    if not sources:
+        raise CavityError(
+            "no solids found in the selected objects. Cavity extraction needs the parts "
+            "that bound the air -- datum planes and joints carry no volume."
+        )
 
     solids = [s.solid for s in sources]
     fused = solids[0].multiFuse(solids[1:]) if len(solids) > 1 else solids[0]
@@ -405,7 +446,7 @@ def extract_regions(
     broken = fuse_diagnostic(sources, fused)
     if broken is not None:
         # Only now pay for the expensive per-part check: it is what names the culprit.
-        raise BooleanFailure([broken] + geometry_diagnostics(parts, deep=True))
+        raise BooleanFailure([broken] + diagnostics_for_solids(sources, deep=True))
 
     shell = envelope if envelope is not None else make_envelope(solids, padding)
 
@@ -413,7 +454,7 @@ def extract_regions(
         void = shell.cut(fused)
     except Exception as exc:  # noqa: BLE001 -- OCC boolean failures are opaque
         raise BooleanFailure(
-            [cut_failure_diagnostic(exc)] + geometry_diagnostics(parts, deep=True)
+            [cut_failure_diagnostic(exc)] + diagnostics_for_solids(sources, deep=True)
         ) from exc
 
     envelope_box = shell.BoundBox

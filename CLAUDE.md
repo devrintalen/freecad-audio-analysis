@@ -67,6 +67,23 @@ the user's unsaved document with it, and no `try`/`except` catches that. Grow an
 with `Shape.scale` about its centroid instead — a native transform that cannot fail and
 preserves exact curves, where `transformGeometry` re-approximates them. `STRUCTURE.md` §6.5.
 
+**Never pass a fuzzy tolerance to a boolean**, and treat `makeOffsetShape` the same way.
+`fuse`/`cut`/`multiFuse` accept one, and it is the obvious way to close a small gap. On the
+real two-way assembly, 0.1 mm **hard-crashed the process during the cut** — no Python
+exception, nothing catchable — and 0.2 mm ran but silently deleted 30 cm³ of the 333 cm³ of
+input material. The second is the worse failure: it *passes* `fuse_diagnostic`, because the
+result still sits between the largest part and the sum, so a fuzzy boolean converts the
+exact silent-corruption failure this workbench exists to detect into a routine one. Close
+openings with real cap geometry through `capping.py`, which is exact. `STRUCTURE.md` §6.5.
+
+**A `Group` does not make an object a container.** An `App::Link` to a PartDesign body
+republishes that body's *feature tree* as its own `Group` — 34 entries of `Sketch`, `Pad`,
+`Pocket` for one cup. Recursing on "has children" walks into the construction history and
+collects every intermediate solid, so a 12-part assembly becomes 100-odd overlapping solids
+and the next boolean never returns — presenting as a hang with nothing to read. Test by
+type (`App::Part`, `App::DocumentObjectGroup`, `App::LinkGroup`); a link is always a leaf.
+Use `seeding._is_container`. `STRUCTURE.md` §6.5.
+
 **Ear geometry is a solved problem — use the right source.** See `STRUCTURE.md` §6.4.
 - **Ear canal / concha / pinna simulator** → ITU-T P.57 (06/2021), a *free* standard whose
   annexes give full tabulated cross-sections. `acoupy_ears` (MIT) already implements it and

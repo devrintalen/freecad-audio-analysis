@@ -620,6 +620,101 @@ deserves a dedicated command ("extract cavity from assembly") once meshing lands
 Tier 2; it is the step most likely to be tedious by hand and it is where an
 assembly-aware workbench earns its keep over exporting STEP to a standalone tool.
 
+#### Seeded extraction: one pick, not a list of parts
+
+Route 2's first implementation asked the user to select every solid that bounds the air.
+On the two-way cup that is twelve parts plus nine caps, each of which has to be selected
+*whole* — picking a face contributes nothing — and the tedium was never the real cost. The
+real cost is that **a forgotten part looks exactly like a leak**: both produce an open
+model, and neither says which it was.
+
+So the direction is inverted. `Audio_ExtractCavity` opens a task panel, the user picks
+**one face, edge or vertex on the air side** of any bounding part, and the geometry
+answers the rest (`seeding.py`):
+
+1. Collect every solid in scope — the assembly the pick came from, or the document's root
+   solids for a single part — plus every cap in the document.
+2. Subtract them from a padded envelope, as before.
+3. Reduce the pick to a **probe point** just off the surface on the air side, and keep the
+   void region containing it.
+4. Report which solids actually bound that region, and the share of wetted wall each
+   carries.
+
+Step 4 is what replaces the manual selection: the bounding parts are a *result*, so they
+cannot be got wrong. The share matters too — a part carrying 0.2% of the wall is a screw,
+not acoustics.
+
+Four details are load-bearing, each of which failed first:
+
+- **The probe must sit off the surface.** A picked face lies exactly on the boundary
+  between solid and void, so a point on it is in neither region and the match is a coin
+  toss. Offsetting 0.01 mm along the *oriented* face normal lands it unambiguously in the
+  air. Edges and vertices have no single normal, so they fall back to nearest-region
+  matching — which is why the panel recommends picking a face.
+- **A container's `Shape` cannot be used.** It is one flat compound in which the parts are
+  anonymous, so "solid 7 bounds your cavity" is unactionable, and it silently drops hidden
+  children. Walking the container with `getSubObject` keeps both identity and placement.
+- **Having a `Group` does not make something a container.** An `App::Link` to a PartDesign
+  body republishes that body's *feature tree* as its own `Group` — 34 entries of `Sketch`,
+  `Pad`, `Pocket` for one cup. Recursing into it collects every intermediate solid of the
+  construction history, turning 12 parts into 100-odd overlapping solids, and the fuse
+  never returns. It presents as a hang with nothing to read. A link is always a leaf; test
+  by type (`App::Part`, `App::DocumentObjectGroup`, `App::LinkGroup`), never by children.
+- **Caps are included whatever their visibility.** A cap is a modelling device, routinely
+  hidden once it works, and dropping one silently reopens the cavity it was built to close.
+  Ordinary bodies follow `IncludeHidden` (default on) and anything skipped is *named*.
+
+Measured on `assembly_driver_cup` (12 parts, 9 caps): collection is instant, the fuse and
+cut take ~4 s, wall attribution another ~4 s. The panel caches the boolean against its
+inputs, so re-picking a seed — the thing users do repeatedly — is immediate. Seeding from
+the cushion's inner face, the woofer's face or the plate's edge all return the same
+104.0 cm³ ear cavity, bounded by Cushion 32%, Plate 23%, Woofer 22.5%, Cap001 14.2%,
+Tweeter 4.6%, Tweeter Holder 3.4% and one screw at 0.2%. Seeding from the cup's outer face
+returns the exterior, correctly.
+
+**A seed beats a region index.** `RegionIndex` names a cavity by its position in a sorted
+list, which a geometry change reshuffles without warning; the object then keeps a
+different cavity and nothing announces it. A seed names a cavity by *where it is*, so it
+survives the rebuild. `RegionIndex` remains the fallback when no seed is set.
+
+**Showing the leak is the feature.** When the seeded region turns out to be the exterior,
+the panel keeps and displays it rather than reporting "no cavity". A cavity that has
+swollen to fill the bounding box is unmistakable in the 3D view and invisible in a volume
+readout, and it means exactly one of two things: a cap is missing, or there is a leak path
+nobody knew about. The model is drawn translucent and the cavity solid so that this is the
+first thing the user sees.
+
+#### `MaxOpening`: recorded, deliberately not yet applied
+
+The panel carries a **largest opening treated as closed** field, default 0.5 mm. It stores
+intent and does **not** currently affect the bounds — the extraction is exact geometry, so
+an opening of any size still connects the cavity to whatever is beyond it. Closing one
+means capping it.
+
+The obvious implementation is an OCC **fuzzy boolean**, and it was measured and rejected on
+`assembly_driver_cup`:
+
+| Fuzzy tolerance | Result |
+|---|---|
+| 0 (exact) | 332.7 cm³ union, 10 void regions — correct |
+| 0.05 mm | 332.7 cm³, 9 regions — no gaps actually closed |
+| **0.1 mm** | fuse succeeded; the **cut hard-crashed the process** — no Python exception, nothing catchable |
+| 0.2 mm | ran, but returned a 302.8 cm³ union from 332.7 cm³ of input — **30 cm³ of material silently deleted** |
+
+Both failures are disqualifying. The crash is the same class as `Wire.makeOffset2D`: it
+takes the user's unsaved document with it and no `try`/`except` helps. The 0.2 mm case is
+worse in kind — it is a wrong answer that *passes* the union-invariant check of
+`fuse_diagnostic`, because 302.8 cm³ sits legitimately between the largest part (217 cm³)
+and the sum (332.9 cm³). Fuzzy booleans turn the exact failure this workbench was built to
+detect into a routine one. 3D offsetting (`makeOffsetShape`) is the same family of risk.
+
+The route that stays exact is to **auto-cap small mouths**: enumerate hole rims on the
+parts (167 candidates on this assembly, 0.1 s), build caps for those at or under
+`MaxOpening` through the existing `capping.py`, re-extract, and list anything larger as a
+leak candidate. That is deferred until the panel has been used on real geometry — the
+mouth list has to be shown to be finding the right things before it is allowed to change
+the answer.
+
 **Measured on a real assembly.** Run against a two-way over-ear cup (`examples/inspect_assembly.py`,
 118 solids across eight externally linked documents — a 70 mm woofer, a tweeter, cup,
 plate, retainers and a PCB):

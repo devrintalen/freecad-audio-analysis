@@ -467,7 +467,7 @@ class TestCavityObjectReportsFailure:
         def boom(*args, **kwargs):
             raise error
 
-        monkeypatch.setattr(cavity_object, "extract_regions", boom)
+        monkeypatch.setattr(cavity_object, "extract_regions_from_solids", boom)
         cavity.Proxy.extract(cavity)
         return cavity
 

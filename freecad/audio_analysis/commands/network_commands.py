@@ -563,11 +563,12 @@ class ExtractCavity(AudioCommand):
     """
 
     Name = "ExtractCavity"
-    MenuText = "Extract cavity from selection"
+    MenuText = "Extract cavity"
     ToolTip = (
-        "Derive an air volume by subtracting the selected parts from an envelope. "
-        "Select the parts that bound the air -- an assembly works. Open models need a "
-        "cap solid across the opening before anything is enclosed."
+        "Derive an air volume from one pick. Select a face on the air side of any part "
+        "that bounds the cavity and the connected free space is found from it, along "
+        "with the parts that bound it. Open models need a cap across the opening before "
+        "anything is enclosed."
     )
     IconName = "Cavity"
 
@@ -576,41 +577,38 @@ class ExtractCavity(AudioCommand):
 
         from freecad.audio_analysis.objects import find_active_analysis
         from freecad.audio_analysis.objects.cavity_object import make_cavity
+        from freecad.audio_analysis.taskpanels.cavity_panel import CavityTaskPanel
 
-        selection = FreeCADGui.Selection.getSelection()
-        if not selection:
+        if FreeCADGui.Control.activeDialog():
             FreeCAD.Console.PrintError(
-                "Audio Analysis: select the parts that bound the air first. An assembly "
-                "or a set of solids both work.\n"
+                "Audio Analysis: another task panel is already open. Close it first.\n"
             )
             return
 
-        analysis = find_active_analysis()
-        doc = FreeCAD.ActiveDocument
-        with transaction("Extract cavity"):
-            cavity = make_cavity(doc, analysis)
-            cavity.Boundary = list(selection)
-            cavity.Proxy.extract(cavity)
+        seed = None
+        for selected in _unresolved_selection():
+            for subname in selected.SubElementNames or ():
+                if subname:
+                    seed = (selected.Object, subname)
+                    break
+            if seed is not None:
+                break
 
-        FreeCAD.Console.PrintMessage(
-            f"Audio Analysis: {cavity.Label} from {len(selection)} object(s):\n"
-            f"{cavity.Regions}\n"
-        )
-        if cavity.Volume.Value > 0:
-            FreeCAD.Console.PrintMessage(
-                f"Audio Analysis: kept {cavity.Volume.getValueAs('cm^3').Value:.3f} cm3. "
-                f"Link it from an acoustic volume, or use 'Volume from cavity'.\n"
-            )
+        doc = FreeCAD.ActiveDocument
+        # The transaction is opened here and closed by the panel, not wrapped around this
+        # method: showDialog returns immediately, so the work happens after run() is over.
+        # Cancel aborts it, which removes the object with no debris left behind.
+        doc.openTransaction("Extract cavity")
+        try:
+            cavity = make_cavity(doc, find_active_analysis())
+            panel = CavityTaskPanel(cavity, seed=seed)
+            FreeCADGui.Control.showDialog(panel)
+        except Exception:
+            doc.abortTransaction()
+            raise
 
     def IsActive(self) -> bool:
-        try:
-            import FreeCADGui
-
-            return FreeCAD.ActiveDocument is not None and bool(
-                FreeCADGui.Selection.getSelection()
-            )
-        except ImportError:
-            return False
+        return FreeCAD.ActiveDocument is not None
 
 
 class VolumeFromCavity(AudioCommand):

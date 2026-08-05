@@ -23,18 +23,21 @@ from typing import Any, Iterable
 
 import FreeCAD
 
+from freecad.audio_analysis import seeding
 from freecad.audio_analysis.cavity import (
     BooleanFailure,
     CavityError,
+    DEFAULT_MAX_OPENING_MM,
     DEFAULT_MINIMUM_VOLUME_MM3,
     DEFAULT_PADDING_MM,
     describe_regions,
     enclosed_regions,
-    extract_regions,
+    extract_regions_from_solids,
     format_diagnostics,
     geometry_diagnostics,
 )
 from freecad.audio_analysis.checks import Severity
+from freecad.audio_analysis.seeding import SeedError
 from freecad.audio_analysis.objects.base import AudioObject, PropertySpec, attach_view_provider
 from freecad.audio_analysis.objects.network_objects import quantity
 
@@ -75,10 +78,36 @@ class AcousticCavity(AudioObject):
                 default=quantity(DEFAULT_MINIMUM_VOLUME_MM3, "mm^3"),
             ),
             PropertySpec(
+                # XLinkSub for the same reason the cap's Opening is: in an assembly the
+                # parts are links into other documents, and a plain link property refuses
+                # them outright.
+                "App::PropertyXLinkSub", "Seed", "Cavity",
+                "One face, edge or vertex on the air side of any bounding part. The "
+                "cavity kept is whichever void touches it, which survives a rebuild that "
+                "renumbers the regions -- unlike RegionIndex. A face is best: it says "
+                "which side the air is on, so it is never ambiguous.",
+            ),
+            PropertySpec(
                 "App::PropertyInteger", "RegionIndex", "Cavity",
-                "Which void to keep: 0 is the largest enclosed one, -1 keeps all "
-                "enclosed regions. Check Regions to see what was found.",
+                "Which void to keep when no Seed is set: 0 is the largest enclosed one, "
+                "-1 keeps all enclosed regions. Check Regions to see what was found.",
                 default=0,
+            ),
+            PropertySpec(
+                "App::PropertyLength", "MaxOpening", "Cavity",
+                "Openings up to this across are meant to count as closed. NOT YET "
+                "APPLIED -- the bounds today come from exact geometry only, so an opening "
+                "of any size still connects the cavity to whatever is beyond it. Recorded "
+                "now so the intent is stored with the model; see STRUCTURE.md §6.5.",
+                default=quantity(DEFAULT_MAX_OPENING_MM, "mm"),
+            ),
+            PropertySpec(
+                "App::PropertyBool", "IncludeHidden", "Cavity",
+                "Include bodies that are hidden in the 3D view. On by default: a part "
+                "still bounds the air whether or not anyone is looking at it. Caps are "
+                "included whatever this says, since a cap is routinely hidden once it "
+                "works and dropping one silently reopens the cavity.",
+                default=True,
             ),
             PropertySpec(
                 "App::PropertyBool", "AutoUpdate", "Cavity",
@@ -94,6 +123,14 @@ class AcousticCavity(AudioObject):
                 "App::PropertyString", "Diagnostics", "Results",
                 "Problems found in the boundary parts themselves, with what to do about "
                 "them. Empty means the parts are fit to be combined.",
+                default="", read_only=True,
+            ),
+            PropertySpec(
+                "App::PropertyString", "BoundedBy", "Results",
+                "Which parts actually bound the kept cavity, and the share of its wall "
+                "each one carries. Derived from the result, so it cannot disagree with "
+                "the geometry -- a part contributing a fraction of a percent is usually a "
+                "screw that has nothing to do with the acoustics.",
                 default="", read_only=True,
             ),
             PropertySpec(
@@ -147,10 +184,17 @@ class AcousticCavity(AudioObject):
 
         parts = list(obj.Boundary) + list(obj.Caps)
 
+        # Expanding the containers here rather than taking their flattened Shape is what
+        # keeps each solid tied to the part it came from, so BoundedBy can name names --
+        # and it is the only way IncludeHidden can mean anything, since a container's own
+        # shape has already dropped its hidden children by the time we see it.
+        sources, hidden = seeding.solids_for(
+            parts, include_hidden=bool(getattr(obj, "IncludeHidden", True))
+        )
+
         try:
-            regions = extract_regions(
-                obj.Boundary,
-                obj.Caps,
+            regions = extract_regions_from_solids(
+                sources,
                 obj.Envelope.Shape if obj.Envelope is not None else None,
                 padding=obj.Padding.getValueAs("mm").Value,
                 minimum_volume=obj.MinimumVolume.getValueAs("mm^3").Value,
@@ -181,7 +225,22 @@ class AcousticCavity(AudioObject):
         obj.Regions = describe_regions(
             regions, capped=bool(obj.Caps), suspect_parts=suspect
         )
+        if hidden:
+            obj.Regions += (
+                f"\nSkipped as hidden: {', '.join(sorted(set(hidden)))}. These bound the "
+                f"air whether or not they are shown; turn IncludeHidden on to use them."
+            )
         enclosed = enclosed_regions(regions)
+
+        # A seed picks the region by where it is, not by what number it came out as, so it
+        # can legitimately land on the exterior. That is not a failure to report as "no
+        # cavity" -- it is the single most useful thing this object can say, because a
+        # cavity that reaches the envelope wall means a cap is missing or a leak path was
+        # overlooked. Show it, and say so.
+        probe = self._probe(obj)
+        if probe is not None:
+            self._keep_seeded(obj, regions, probe, sources)
+            return
 
         if not enclosed:
             self._clear_result(obj)
@@ -218,9 +277,74 @@ class AcousticCavity(AudioObject):
             )
             kept = [enclosed[0]]
 
+        self._keep(obj, kept, sources)
+
+    # -- choosing which region to keep ----------------------------------------------
+
+    @staticmethod
+    def _probe(obj: Any) -> Any:
+        """The seed reduced to a probe point, or ``None`` if there is no usable seed."""
+        seed = getattr(obj, "Seed", None)
+        if not seed:
+            return None
+        source, subnames = seed
+        subname = next((s for s in subnames if s), None)
+        if source is None or not subname:
+            return None
+        try:
+            return seeding.probe_from_reference(source, subname)
+        except (SeedError, CavityError) as exc:
+            # A seed goes stale when the feature it names is rebuilt. Falling back to
+            # RegionIndex would quietly keep a different cavity, so say what happened.
+            FreeCAD.Console.PrintWarning(
+                f"Audio Analysis: {obj.Label}: the seed pick could not be resolved "
+                f"({exc}). Re-pick it, or clear Seed to select by RegionIndex.\n"
+            )
+            return None
+
+    def _keep_seeded(self, obj: Any, regions: Any, probe: Any, sources: Any) -> None:
+        """Keep the region the probe sits in, whatever kind of region that turns out."""
+        region = seeding.region_for_probe(regions, probe)
+        if region is None:
+            self._clear_result(obj)
+            FreeCAD.Console.PrintWarning(
+                f"Audio Analysis: {obj.Label}: the seeded face touches no air. It is "
+                f"probably buried against another part -- pick a face on the side the "
+                f"cavity is on.\n"
+            )
+            return
+
+        self._keep(obj, [region], sources)
+
+        if region.is_exterior:
+            obj.Regions = (
+                f"LEAKS TO OUTSIDE -- the seeded pick is on a region of "
+                f"{region.volume_cm3:.3f} cm3 that reaches the envelope wall, so this air "
+                f"is continuous with the outside and is not a cavity. An opening of any "
+                f"size does this; MaxOpening does not yet close one.\n" + obj.Regions
+            )
+            FreeCAD.Console.PrintWarning(
+                f"Audio Analysis: {obj.Label} leaks to the outside. The cavity fills the "
+                f"whole envelope, which means a cap is missing or a leak path was "
+                f"overlooked. BoundedBy lists every part it reaches.\n"
+            )
+
+    def _keep(self, obj: Any, kept: Any, sources: Any) -> None:
+        """Set Shape, Volume and BoundedBy from the regions being kept."""
+        import Part
+
         shapes = [region.shape for region in kept]
         obj.Shape = shapes[0] if len(shapes) == 1 else Part.makeCompound(shapes)
         obj.Volume = quantity(sum(region.volume_mm3 for region in kept), "mm^3")
+
+        try:
+            described = []
+            for region in kept:
+                parts, unattributed = seeding.wetted_parts(region, sources)
+                described.append(seeding.describe_wetted(parts, unattributed))
+            obj.BoundedBy = "\n".join(described)
+        except Exception as exc:  # noqa: BLE001 -- reporting must never break the result
+            obj.BoundedBy = f"could not be determined: {exc}"
 
 
 def make_cavity(doc: Any, analysis: Any = None, name: str = "Cavity") -> Any:
