@@ -1,13 +1,15 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <package format="1" xmlns="https://wiki.freecad.org/Package_Metadata">
-  <name>Audio Analysis</name>
-  <description>
-    Acoustic simulation for headphones, earphones and loudspeakers. Drives existing
-    open-source solvers (Elmer FEM, NumCalc BEM, ngspice) from FreeCAD geometry, and
-    reports sound pressure level, impedance and directivity.
-  </description>
-  <version>0.1.0</version>
-  <date>2026-08-02</date>
+  <name>AudioAnalysis</name>
+  <!-- The Addon Manager's compact view truncates this at the first full stop, so the
+       first sentence has to stand on its own. -->
+  <description>Acoustic simulation for headphones, earphones and loudspeakers. Builds lumped-element networks from FreeCAD geometry, and drives external open-source solvers (Elmer FEM, NumCalc BEM) as subprocesses to report sound pressure level, impedance and directivity.</description>
+  <!-- Package-level icon. This has to be here and not only on the workbench below: the
+       Addon Manager's catalog builder sparse-clones the file named by *this* element, so
+       an icon declared only inside <content> is listed but never fetched. -->
+  <icon>freecad/audio_analysis/resources/icons/AudioAnalysis.svg</icon>
+  <version>0.1.1</version>
+  <date>2026-08-04</date>
 
   <maintainer email="devrin@fastmail.com">Devrin Talen</maintainer>
   <license file="LICENSE">LGPL-2.1-or-later</license>
@@ -16,10 +18,21 @@
   <url type="readme">https://github.com/devrintalen/freecad-audio-analysis/blob/master/README.md</url>
   <url type="bugtracker">https://github.com/devrintalen/freecad-audio-analysis/issues</url>
 
+  <tag>acoustics</tag>
+  <tag>simulation</tag>
+  <tag>headphones</tag>
+  <tag>loudspeaker</tag>
+  <tag>FEM</tag>
+
   <content>
     <workbench>
       <classname>AudioAnalysisWorkbench</classname>
       <name>Audio Analysis</name>
+      <!-- Without this, FreeCAD's loader joins the addon directory with the workbench
+           *name* and looks for Init.py/InitGui.py in a "Audio Analysis" subfolder that
+           does not exist, so the root entry points never run. "./" points it at the
+           addon root, where they actually live. -->
+      <subdirectory>./</subdirectory>
       <icon>freecad/audio_analysis/resources/icons/AudioAnalysis.svg</icon>
       <description>
         Electroacoustic simulation: lumped-element modelling, interior and thermoviscous
