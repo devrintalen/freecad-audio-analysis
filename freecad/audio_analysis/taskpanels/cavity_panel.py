@@ -47,13 +47,15 @@ PREVIEW_TRANSPARENCY = 85
 #: overlay on the parts.
 CAVITY_TRANSPARENCY = 20
 
-#: Edge weight on the previewed cavity, matching PartDesign's feature previews. A
-#: translucent solid inside a translucent model has no readable silhouette without it.
-PREVIEW_LINE_WIDTH = 3.0
+#: Edge weight on the previewed cavity. Heavy, because a translucent solid inside a
+#: translucent model has no readable silhouette without it, and the edges are seen through
+#: the surrounding parts rather than against a clear background.
+PREVIEW_LINE_WIDTH = 4.0
 
-#: Deep blue for those edges -- the workbench's air colour, darkened enough to read
-#: against the pale shaded faces it outlines.
-PREVIEW_LINE_COLOUR = (0.05, 0.25, 0.55)
+#: White, which is the one colour that stays legible here. The edges are drawn over the
+#: cavity's own pale blue faces *and* through whatever dimmed parts lie in front of them,
+#: so anything tinted competes with one or the other; white separates from both.
+PREVIEW_LINE_COLOUR = (1.00, 1.00, 1.00)
 
 #: Below this share of the cavity's wall area, a part is listed but called out as
 #: incidental. A screw contributing 0.2% is not something anyone needs to think about.
