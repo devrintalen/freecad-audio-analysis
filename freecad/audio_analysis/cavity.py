@@ -51,15 +51,6 @@ DEFAULT_MINIMUM_VOLUME_MM3 = 1.0
 #: How far the automatic envelope stands off the parts, in mm.
 DEFAULT_PADDING_MM = 2.0
 
-#: Default for the largest opening a user means to treat as closed, in mm.
-#:
-#: Not yet applied to the geometry -- see the ``MaxOpening`` property and STRUCTURE.md
-#: §6.5. Half a millimetre is the scale at which the distinction stops being arbitrary: a
-#: slot much below it is thermoviscously dominated and behaves as a resistive leak rather
-#: than an open port, so treating it as sealed and modelling it as a ``LeakPath`` is
-#: closer to the physics than leaving the cavity open.
-DEFAULT_MAX_OPENING_MM = 0.5
-
 #: A region whose bounding box comes within this of the envelope's is treated as the
 #: exterior. Generous, because the exterior wraps the parts and always reaches the edge.
 EXTERIOR_TOLERANCE_MM = 1e-6

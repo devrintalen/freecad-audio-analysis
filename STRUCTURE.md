@@ -684,15 +684,14 @@ readout, and it means exactly one of two things: a cap is missing, or there is a
 nobody knew about. The model is drawn translucent and the cavity solid so that this is the
 first thing the user sees.
 
-#### `MaxOpening`: recorded, deliberately not yet applied
+#### Openings are closed by capping them, not by a tolerance
 
-The panel carries a **largest opening treated as closed** field, default 0.5 mm. It stores
-intent and does **not** currently affect the bounds — the extraction is exact geometry, so
-an opening of any size still connects the cavity to whatever is beyond it. Closing one
-means capping it.
+There is no "treat openings up to N mm as closed" control, and that is a decision rather
+than an omission. Extraction is exact geometry: an opening of any size, however small,
+connects the cavity to whatever is beyond it, and the way to close one is to cap it.
 
-The obvious implementation is an OCC **fuzzy boolean**, and it was measured and rejected on
-`assembly_driver_cup`:
+The obvious way to offer such a control is an OCC **fuzzy boolean**. It was measured and
+rejected on `assembly_driver_cup`:
 
 | Fuzzy tolerance | Result |
 |---|---|
@@ -708,12 +707,11 @@ worse in kind — it is a wrong answer that *passes* the union-invariant check o
 and the sum (332.9 cm³). Fuzzy booleans turn the exact failure this workbench was built to
 detect into a routine one. 3D offsetting (`makeOffsetShape`) is the same family of risk.
 
-The route that stays exact is to **auto-cap small mouths**: enumerate hole rims on the
-parts (167 candidates on this assembly, 0.1 s), build caps for those at or under
-`MaxOpening` through the existing `capping.py`, re-extract, and list anything larger as a
-leak candidate. That is deferred until the panel has been used on real geometry — the
-mouth list has to be shown to be finding the right things before it is allowed to change
-the answer.
+If automatic closing is ever wanted, the route that stays exact is to **auto-cap small
+mouths**: enumerate hole rims on the parts (167 candidates on this assembly, 0.1 s), build
+caps for the small ones through the existing `capping.py`, re-extract, and list anything
+larger as a leak candidate. `Audio_CapOpening` already does the hard half of that from a
+picked edge, so the missing piece is only the automatic discovery of the rims.
 
 **Measured on a real assembly.** Run against a two-way over-ear cup (`examples/inspect_assembly.py`,
 118 solids across eight externally linked documents — a 70 mm woofer, a tweeter, cup,

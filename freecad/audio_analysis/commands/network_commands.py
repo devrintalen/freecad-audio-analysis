@@ -34,6 +34,20 @@ def _unresolved_selection() -> list[Any]:
         return FreeCADGui.Selection.getSelectionEx()
 
 
+def _seed_from_selection() -> tuple[Any, str] | None:
+    """The first sub-element pick in the selection, as ``(object, subname)``.
+
+    A cavity is seeded from one pick and there is no picker inside the panel, so the
+    selection made before the command runs is the whole input. Returns ``None`` when
+    nothing usable is selected, which is also what greys the command out.
+    """
+    for selected in _unresolved_selection():
+        for subname in selected.SubElementNames or ():
+            if subname:
+                return selected.Object, subname
+    return None
+
+
 def _selected_of_type(type_name: str) -> list[Any]:
     """Selected objects of one Audio type, or an empty list when there is no GUI."""
     try:
@@ -585,14 +599,14 @@ class ExtractCavity(AudioCommand):
             )
             return
 
-        seed = None
-        for selected in _unresolved_selection():
-            for subname in selected.SubElementNames or ():
-                if subname:
-                    seed = (selected.Object, subname)
-                    break
-            if seed is not None:
-                break
+        seed = _seed_from_selection()
+        if seed is None:
+            FreeCAD.Console.PrintError(
+                "Audio Analysis: select a face on the air side of a part that bounds the "
+                "cavity, then run this again. A whole object is not enough -- the "
+                "extraction needs to know which side the air is on.\n"
+            )
+            return
 
         doc = FreeCAD.ActiveDocument
         # The transaction is opened here and closed by the panel, not wrapped around this
@@ -608,7 +622,10 @@ class ExtractCavity(AudioCommand):
             raise
 
     def IsActive(self) -> bool:
-        return FreeCAD.ActiveDocument is not None
+        try:
+            return FreeCAD.ActiveDocument is not None and _seed_from_selection() is not None
+        except (ImportError, AttributeError):
+            return False
 
 
 class VolumeFromCavity(AudioCommand):

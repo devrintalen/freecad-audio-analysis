@@ -27,7 +27,6 @@ from freecad.audio_analysis import seeding
 from freecad.audio_analysis.cavity import (
     BooleanFailure,
     CavityError,
-    DEFAULT_MAX_OPENING_MM,
     DEFAULT_MINIMUM_VOLUME_MM3,
     DEFAULT_PADDING_MM,
     describe_regions,
@@ -94,14 +93,6 @@ class AcousticCavity(AudioObject):
                 default=0,
             ),
             PropertySpec(
-                "App::PropertyLength", "MaxOpening", "Cavity",
-                "Openings up to this across are meant to count as closed. NOT YET "
-                "APPLIED -- the bounds today come from exact geometry only, so an opening "
-                "of any size still connects the cavity to whatever is beyond it. Recorded "
-                "now so the intent is stored with the model; see STRUCTURE.md §6.5.",
-                default=quantity(DEFAULT_MAX_OPENING_MM, "mm"),
-            ),
-            PropertySpec(
                 "App::PropertyBool", "IncludeHidden", "Cavity",
                 "Include bodies that are hidden in the 3D view. On by default: a part "
                 "still bounds the air whether or not anyone is looking at it. Caps are "
@@ -139,10 +130,23 @@ class AcousticCavity(AudioObject):
             ),
         )
 
+    #: Properties this object used to carry. Removed on restore so a document written by
+    #: an older workbench does not keep showing a control that does nothing.
+    OBSOLETE_PROPERTIES = ("MaxOpening",)
+
     def execute(self, obj: Any) -> None:
         if not obj.AutoUpdate:
             return
         self.extract(obj)
+
+    def onDocumentRestored(self, obj: Any) -> None:
+        super().onDocumentRestored(obj)
+        for name in self.OBSOLETE_PROPERTIES:
+            if hasattr(obj, name):
+                try:
+                    obj.removeProperty(name)
+                except Exception:  # noqa: BLE001 -- a leftover control is not worth raising
+                    pass
 
     # -- reporting -----------------------------------------------------------------
 
@@ -320,8 +324,9 @@ class AcousticCavity(AudioObject):
             obj.Regions = (
                 f"LEAKS TO OUTSIDE -- the seeded pick is on a region of "
                 f"{region.volume_cm3:.3f} cm3 that reaches the envelope wall, so this air "
-                f"is continuous with the outside and is not a cavity. An opening of any "
-                f"size does this; MaxOpening does not yet close one.\n" + obj.Regions
+                f"is continuous with the outside and is not a cavity. An opening of "
+                f"any size does this, however small -- closing one means capping it.\n"
+                + obj.Regions
             )
             FreeCAD.Console.PrintWarning(
                 f"Audio Analysis: {obj.Label} leaks to the outside. The cavity fills the "

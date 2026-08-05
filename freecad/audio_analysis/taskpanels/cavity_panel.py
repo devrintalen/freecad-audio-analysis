@@ -47,6 +47,14 @@ PREVIEW_TRANSPARENCY = 85
 #: overlay on the parts.
 CAVITY_TRANSPARENCY = 20
 
+#: Edge weight on the previewed cavity, matching PartDesign's feature previews. A
+#: translucent solid inside a translucent model has no readable silhouette without it.
+PREVIEW_LINE_WIDTH = 3.0
+
+#: Deep blue for those edges -- the workbench's air colour, darkened enough to read
+#: against the pale shaded faces it outlines.
+PREVIEW_LINE_COLOUR = (0.05, 0.25, 0.55)
+
 #: Below this share of the cavity's wall area, a part is listed but called out as
 #: incidental. A screw contributing 0.2% is not something anyone needs to think about.
 INCIDENTAL_SHARE = 0.01
@@ -103,16 +111,28 @@ class ScenePreview:
                 continue
 
     def highlight(self, obj: Any, transparency: int = CAVITY_TRANSPARENCY) -> None:
-        """Bring one object forward: solid, and on top of the translucent parts."""
+        """Bring one object forward: solid, drawn with its edges picked out.
+
+        The heavy outline is what PartDesign's own previews use, and it earns its place
+        here for the same reason. A translucent blob inside a translucent model has no
+        readable silhouette; the edges are what let you see where the cavity actually
+        stops, which is the single judgement this panel is asking for.
+        """
         vobj = getattr(obj, "ViewObject", None)
         if vobj is None:
             return
-        try:
-            if hasattr(vobj, "Transparency"):
-                self._remember(vobj, "Transparency")
-                vobj.Transparency = transparency
-        except Exception:  # noqa: BLE001 -- cosmetic only
-            pass
+        for name, value in (
+            ("Transparency", transparency),
+            ("DisplayMode", "Flat Lines"),
+            ("LineWidth", PREVIEW_LINE_WIDTH),
+            ("LineColor", PREVIEW_LINE_COLOUR),
+        ):
+            try:
+                if hasattr(vobj, name):
+                    self._remember(vobj, name)
+                    setattr(vobj, name, value)
+            except Exception:  # noqa: BLE001 -- cosmetic, and modes vary between builds
+                continue
 
     def restore(self) -> None:
         for vobj, name, value in reversed(self._undo):
@@ -135,7 +155,6 @@ class CavityTaskPanel:
         self.obj = obj
         self.doc = obj.Document
         self.preview = ScenePreview()
-        self._picking = False
         self._cache_key: tuple | None = None
         self._sources: list[Any] = []
         self._regions: list[Any] = []
@@ -149,7 +168,6 @@ class CavityTaskPanel:
 
         self._start_preview()
         self._refresh()
-        self._set_picking(True)
 
     # -- construction ---------------------------------------------------------------
 
@@ -158,51 +176,30 @@ class CavityTaskPanel:
         layout = QtWidgets.QVBoxLayout(form)
 
         intro = QtWidgets.QLabel(
-            "Pick one face on the <b>air side</b> of any part that bounds the cavity. "
-            "The connected free space is found from it, and the parts that bound that "
-            "space are worked out for you.<br><br>"
+            "The connected free space touching your pick, with the parts that bound it "
+            "worked out from the result.<br><br>"
             "What gets simulated is the air, not the parts. Check the blue solid is the "
             "volume you meant — if it swells to fill the whole model, a cap is "
-            "missing or there is a leak path."
+            "missing or there is a leak path. To seed from a different face, cancel and "
+            "run the command again."
         )
         intro.setWordWrap(True)
         layout.addWidget(intro)
 
-        # -- seed
-        seed_box = QtWidgets.QGroupBox("Seed")
+        # -- seed. Shown, not editable: re-picking would need a selection observer, and
+        # cancelling and running the command again on a different face is both simpler and
+        # what PartDesign's own panels do.
+        seed_box = QtWidgets.QGroupBox("Seeded from")
         seed_layout = QtWidgets.QVBoxLayout(seed_box)
-        self.seed_label = QtWidgets.QLabel("<i>nothing picked yet</i>")
+        self.seed_label = QtWidgets.QLabel("<i>nothing picked</i>")
         self.seed_label.setWordWrap(True)
+        self.seed_label.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
         seed_layout.addWidget(self.seed_label)
-        self.pick_button = QtWidgets.QPushButton("Pick a face")
-        self.pick_button.setCheckable(True)
-        self.pick_button.toggled.connect(self._set_picking)
-        seed_layout.addWidget(self.pick_button)
         layout.addWidget(seed_box)
 
         # -- parameters
-        options = QtWidgets.QGroupBox("Openings")
+        options = QtWidgets.QGroupBox("Parts")
         grid = QtWidgets.QFormLayout(options)
-
-        # A plain double spin box rather than Gui::QuantitySpinBox. The quantity widget
-        # has to come through UiLoader and its value API has moved between releases; this
-        # field does not yet drive any geometry, so buying unit-scheme support at the cost
-        # of a version-dependent widget would be a poor trade.
-        self.max_opening = QtWidgets.QDoubleSpinBox()
-        self.max_opening.setRange(0.0, 1000.0)
-        self.max_opening.setDecimals(3)
-        self.max_opening.setSingleStep(0.1)
-        self.max_opening.setSuffix(" mm")
-        self.max_opening.setValue(self._current_max_opening())
-        grid.addRow("Largest opening treated as closed", self.max_opening)
-
-        caveat = QtWidgets.QLabel(
-            "<i>Recorded but not yet applied.</i> The bounds come from exact geometry, so "
-            "an opening of any size still connects the cavity to what is beyond it. "
-            "Closing one means capping it."
-        )
-        caveat.setWordWrap(True)
-        grid.addRow(caveat)
 
         self.include_hidden = QtWidgets.QCheckBox("Include hidden bodies")
         self.include_hidden.setChecked(bool(getattr(self.obj, "IncludeHidden", True)))
@@ -228,12 +225,6 @@ class CavityTaskPanel:
         layout.addStretch(1)
         return form
 
-    def _current_max_opening(self) -> float:
-        try:
-            return float(self.obj.MaxOpening.getValueAs("mm").Value)
-        except Exception:  # noqa: BLE001 -- property missing on an older document
-            return cavity_lib.DEFAULT_MAX_OPENING_MM
-
     # -- preview -------------------------------------------------------------------
 
     def _scene_objects(self) -> list[Any]:
@@ -254,38 +245,7 @@ class CavityTaskPanel:
         self.preview.dim(self._scene_objects())
         self.preview.highlight(self.obj)
 
-    # -- picking -------------------------------------------------------------------
-
-    def _set_picking(self, on: bool) -> None:
-        if on == self._picking:
-            return
-        self._picking = on
-        try:
-            if on:
-                FreeCADGui.Selection.addObserver(self)
-            else:
-                FreeCADGui.Selection.removeObserver(self)
-        except Exception:  # noqa: BLE001 -- observer API varies; picking degrades to none
-            self._picking = False
-        if self.pick_button.isChecked() != on:
-            self.pick_button.blockSignals(True)
-            self.pick_button.setChecked(on)
-            self.pick_button.blockSignals(False)
-        self.pick_button.setText("Picking — click a face" if on else "Pick a face")
-
-    def addSelection(self, doc: str, obj: str, sub: str, pnt: Any = None) -> None:
-        """FreeCAD selection-observer hook. Arrives as *names*, not objects."""
-        if not self._picking or not sub:
-            return
-        try:
-            document = FreeCAD.getDocument(doc)
-            source = document.getObject(obj)
-        except Exception:  # noqa: BLE001 -- a stale selection event
-            return
-        if source is None or source is self.obj:
-            return
-        if self._set_seed(source, sub):
-            self._refresh()
+    # -- the seed ------------------------------------------------------------------
 
     def _set_seed(self, source: Any, subname: str) -> bool:
         """Record the pick. Returns whether it was accepted, so a refusal is not acted on."""
@@ -343,7 +303,15 @@ class CavityTaskPanel:
         """Re-extract if the inputs changed, then re-match the seed and redraw."""
         seed = getattr(self.obj, "Seed", None)
         if not seed or not seed[1]:
-            self.verdict.setText("Pick a face to begin.")
+            # Only reachable by editing a cavity made before seeding existed, which still
+            # selects its region by RegionIndex. There is nothing to pick with here, so
+            # say what to do rather than offering a control that is not present.
+            self.verdict.setText(
+                "This cavity has no seed — it keeps region "
+                f"{getattr(self.obj, 'RegionIndex', 0)} by number. Cancel and run "
+                "<b>Extract cavity</b> with a face selected to seed it by position, "
+                "which survives a rebuild."
+            )
             self.walls.setPlainText("")
             return
 
@@ -474,12 +442,11 @@ class CavityTaskPanel:
         )
 
     def _stop(self) -> None:
-        """Leave picking mode and undim the model. Always before touching the document.
+        """Undim the model. Always before touching the document.
 
         Order matters on Cancel: the restore refers to the cavity's own view provider, and
         aborting the transaction deletes the cavity.
         """
-        self._set_picking(False)
         self.preview.restore()
 
     @staticmethod
@@ -493,7 +460,6 @@ class CavityTaskPanel:
         """Commit: write the settings that were previewed, and keep the object."""
         self._stop()
 
-        self.obj.MaxOpening = quantity(self.max_opening.value(), "mm")
         self.obj.IncludeHidden = self.include_hidden.isChecked()
         boundary, caps = self._boundary_objects()
         self.obj.Boundary = boundary
