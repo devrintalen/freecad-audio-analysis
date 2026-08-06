@@ -867,6 +867,59 @@ readout, and it means exactly one of two things: a cap is missing, or there is a
 nobody knew about. The model is drawn translucent and the cavity solid so that this is the
 first thing the user sees.
 
+#### Locating the leak: two searches, offered rather than run
+
+Showing *that* a cavity leaks turned out to be much easier than showing *where*. On the
+two-way cup the opening is one feature among several hundred, and a translucent solid
+filling the bounding box looks identical whatever the cause. `leaks.py` provides two
+searches, both reached from buttons at the foot of the extraction panel. Neither runs
+automatically: they cost tens of seconds, and they are pointless unless the cavity failed
+to close.
+
+**The near-miss scan** never looks at the air. It reports every pair of parts that comes
+within half a millimetre without overlapping, and — the sharper signal — every cap that
+overlaps *nothing at all*. On the real assembly it ran in 27 s and led with `Cap004
+overlaps nothing and so seals nothing`, which was the whole answer: that cap was missing
+the 1.000 mm `Placement` its seven siblings carry, so it sat 0.019 mm clear of the cup
+while they overlapped it by 24.89 mm³ each. Restoring the placement closed the back volume
+at 182.02 cm³.
+
+The failure it is built around is worth stating, because it defeated everything else
+tried: **a displaced cap is not an undersized one.** Growing that cap did nothing, and
+growing *every* cap by 15 % still left the model open, which looked like proof that no cap
+was responsible. Scaling a cap about its own centroid preserves the displacement.
+
+**The neck-finder** works on the air. It voxelises the leaking region — sectioning it plane
+by plane and filling each section by the even-odd rule, which is roughly a hundred times
+faster than classifying points with `isInside` — computes each air voxel's distance to the
+nearest material, and finds the route to the outside whose *narrowest point is widest*.
+That is a maximum-capacity path, solved exactly by one priority-queue sweep, with no
+threshold to pick. It reported the same defect as a 1.50 mm gap at radius 43.66 mm in 73 s.
+
+Prefer the scan. It is roughly three times cheaper and names an object and a property,
+where the trace names a coordinate. The trace earns its place when the scan finds nothing,
+which is what an opening nobody ever tried to cap looks like: there is no second part
+beside it to come close to.
+
+**Neither search subtracts from the void, and that is not a stylistic choice.** OpenCascade
+cannot be trusted to cut a region that itself came out of a boolean. On this assembly
+`region.cut(box)` returned **−0.4018 cm³** and reported the result valid, where the answer
+was 772.65 cm³; a sphere-shell sweep of the same region reported 38.6 mm² of open area
+between neighbouring radii of 8909 and 12763 mm². Both were read as findings before the
+volume invariant caught them, and both sent the search to the wrong place. The scan
+therefore uses only `common` and `distToShape`, and the neck-finder only `slice` — all of
+which behaved on the same geometry. Any leak test that must subtract has to do it the long
+way round: add the plug to the *boundary solids*, re-fuse, and subtract from the envelope
+again, so `fuse_diagnostic`'s bounds check guards the result.
+
+One further trap, recorded because it produced confident nonsense for an hour: **the
+bounding-box test for "is this region the exterior" breaks under plugging.**
+`extract_regions_from_solids` identifies the exterior by comparing a region's bounding box
+against the envelope's, which is correct for an ordinary extraction and wrong the moment a
+test plug touches or spans the envelope — every region's box then shrinks and *everything*
+reads as enclosed. Leak tests must instead ask whether the region contains a point just
+inside an envelope corner.
+
 #### Openings are closed by capping them, not by a tolerance
 
 There is no "treat openings up to N mm as closed" control, and that is a decision rather
@@ -1621,6 +1674,7 @@ freecad-audio-analysis/
 │       ├── templates.py        # the §6.8 starting topologies
 │       ├── checks.py           # preflight diagnostics (§6.8)
 │       ├── cavity.py           # fluid-domain extraction (§6.5)
+│       ├── leaks.py            # locating an opening once a cavity will not close (§6.5)
 │       ├── geometry.py         # shape access, global placement resolution
 │       ├── commands/           # one module per toolbar command
 │       ├── objects/            # FeaturePython proxies (the §6.2 tree)
