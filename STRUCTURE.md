@@ -820,9 +820,20 @@ Four details are load-bearing, each of which failed first:
 
 - **The probe must sit off the surface.** A picked face lies exactly on the boundary
   between solid and void, so a point on it is in neither region and the match is a coin
-  toss. Offsetting 0.01 mm along the *oriented* face normal lands it unambiguously in the
+  toss. Offsetting 0.01 mm along the face normal lands it unambiguously in the
   air. Edges and vertices have no single normal, so they fall back to nearest-region
   matching — which is why the panel recommends picking a face.
+- **`Face.normalAt` is already outward; do not flip it.** It applies the face's
+  orientation itself, verified on boxes, cylinders and boolean results in FreeCAD 1.1.1.
+  Flipping it again on a `Reversed` face reads plausibly and is what the first version
+  did, and it aims the probe *into the material* on roughly half of all faces — six of a
+  hollow box's twelve. Nothing raises: the probe lands in a solid, no region contains it,
+  the directed containment test finds nothing, and the match falls through to the
+  nearest-region path meant for edges and vertices. That path prefers the *largest*
+  touching region, which beside a cavity wall is the exterior — so a face pick reported a
+  leak that was not there, having quietly discarded the one thing a face pick is for.
+  The regression test walks *every* face of four hollow solids, because the bug is
+  invisible to any test that picks one face: the obvious ones to pick are `Forward`.
 - **A container's `Shape` cannot be used.** It is one flat compound in which the parts are
   anonymous, so "solid 7 bounds your cavity" is unactionable, and it silently drops hidden
   children. Walking the container with `getSubObject` keeps both identity and placement.
