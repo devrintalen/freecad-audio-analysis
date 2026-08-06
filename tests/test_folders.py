@@ -138,14 +138,42 @@ class TestFindingTheFolder:
         assert names(folder) == sorted([first.Name, second.Name])
         assert sum(1 for c in analysis.Group if folders.is_folder(c, CAPS)) == 1
 
-    def test_a_folder_is_identified_by_its_marker_not_its_type(self, doc):
-        """A plain group the user made themselves must not be mistaken for ours."""
+    def test_a_folder_is_identified_by_its_proxy_type(self, doc):
+        """The same tag every other object here is found by, and what Assembly does with
+        `Assembly::JointGroup` — minus the C++ type, which a Python-only addon cannot have."""
+        from freecad.audio_analysis.objects.base import is_audio_object
+
+        analysis = make_analysis(doc)
+        make_cap(doc, analysis)
+        folder = folders.find_folder(analysis, CAPS)
+
+        assert folder.TypeId == "App::DocumentObjectGroupPython"
+        assert is_audio_object(folder, "Audio::CapFolder")
+        assert folders.is_folder(folder)
+
+    def test_a_plain_group_the_user_made_is_not_mistaken_for_ours(self, doc):
         analysis = make_analysis(doc)
         theirs = doc.addObject("App::DocumentObjectGroup", "MyStuff")
         analysis.addObject(theirs)
 
         assert not folders.is_folder(theirs)
         assert folders.find_folder(analysis, CAPS) is None
+
+    def test_a_folder_from_the_marker_property_revision_is_reused(self, doc):
+        """One released revision marked folders with an `AudioFolder` string instead of a
+        proxy. Failing to recognise those would grow a second folder beside the first, and
+        a duplicate is the kind of fault that survives much longer than an error."""
+        analysis = make_analysis(doc)
+        legacy = doc.addObject("App::DocumentObjectGroup", "Caps")
+        legacy.addProperty("App::PropertyString", folders.LEGACY_FOLDER_PROPERTY, "Audio", "")
+        setattr(legacy, folders.LEGACY_FOLDER_PROPERTY, CAPS.key)
+        analysis.addObject(legacy)
+
+        cap = make_cap(doc, analysis, "Cap")
+
+        assert folders.find_folder(analysis, CAPS).Name == legacy.Name
+        assert cap.Name in names(legacy)
+        assert sum(1 for c in analysis.Group if folders.is_folder(c, CAPS)) == 1
 
     def test_members_finds_them_whether_foldered_or_loose(self, doc):
         analysis = make_analysis(doc)

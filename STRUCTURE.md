@@ -1243,19 +1243,38 @@ ten network objects, so before this the analysis listed twenty-six things at its
 twenty of which were caps, and the network was a minority of its own tree. Folding them
 away leaves eight.
 
-So each of those kinds gets an `App::DocumentObjectGroup` of its own, the way an Assembly
-files its joints (`objects/folders.py`). Three rules keep it from misbehaving:
+So each of those kinds gets a group of its own (`objects/folders.py`), following the
+Assembly workbench — which files joints, bills of materials, exploded views and simulations
+this way, one group apiece, each **found by a stable type tag rather than by its label**:
 
-- **The folder is found by a marker, not by a label.** It carries a read-only `AudioFolder`
-  property naming what it collects. Matching on the label would fork a second folder the
-  moment anyone renamed "Caps", and a duplicate is a failure that survives much longer than
-  an error.
-- **A folder is never created empty.** An analysis with no caps does not grow a `Caps`.
-- **Creating one object tidies all of them.** `folders.organise` sweeps the whole analysis,
-  so a document written before the folders existed is brought into line by the next cap or
-  cavity rather than staying half-organised. Nothing moves on document *restore*:
-  rearranging someone's tree as a side effect of opening the file, and marking it modified
-  before they have touched it, is a worse surprise than a tidy-up they triggered.
+```python
+def getJointGroup(assembly):                        # Mod/Assembly/UtilsAssembly.py
+    for obj in assembly.OutList:
+        if obj.TypeId == "Assembly::JointGroup":
+            return obj
+    return assembly.newObject("Assembly::JointGroup", "Joints")
+```
+
+The one thing that cannot be copied is the *kind* of tag. `Assembly::JointGroup` is a
+registered C++ type, and this workbench must contain no compiled extensions. The Python
+equivalent is the tag everything else here already uses: an
+`App::DocumentObjectGroupPython` whose proxy carries a persisted `Type` —
+`Audio::CapFolder`, `Audio::CavityFolder` — found with `is_audio_object`. Matching on the
+label instead would fork a second folder the moment anyone renamed "Caps", and a duplicate
+is a fault that survives far longer than an error.
+
+Two places this departs from Assembly, on the merits rather than by necessity:
+
+- **A folder is never created empty.** Assembly creates `Joints` when the assembly is made,
+  which is right when joints are the whole point of the container. Caps are optional here —
+  air modelled directly as a solid needs none — so an empty `Caps` on every analysis would
+  be noise.
+- **Creating one object tidies all of them.** Assembly needs no sweep, because joints have
+  only ever been created into the group. These folders arrived after documents already had
+  caps loose in the analysis, so `folders.organise` sweeps the whole analysis and a
+  half-organised tree never appears. Nothing moves on document *restore*: rearranging
+  someone's tree as a side effect of opening the file, and marking it modified before they
+  have touched it, is the worse surprise.
 
 The folders are presentational, so nothing downstream may depend on them. `checks._members`
 descends one level through them, which is the single point every preflight check reaches
