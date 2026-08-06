@@ -31,10 +31,10 @@ are unvalidated — say so.
 
 **What is next**, in order (`STRUCTURE.md` §5 defines the tiers):
 
-1. Elmer and Gmsh are installed (2026-08-05). **Still outstanding:** drive them end to end
-   from FreeCAD's FEM workbench on a stock example, proving the toolchain before depending
-   on it. Nothing in the SIF writer should be written until this passes — it is what
-   separates "our SIF generator is wrong" from "Elmer is misconfigured".
+1. ~~Install Elmer and Gmsh, and prove the toolchain end to end.~~ **Done 2026-08-05.**
+   `scripts/check_elmer_toolchain.py` drives Gmsh → ElmerGrid → ElmerSolver from FreeCAD on
+   a stock heat problem and checks the field against its exact answer. Re-run it after any
+   Elmer or Gmsh upgrade.
 2. Tier 2 — the Elmer SIF writer for the lossless Helmholtz equation, plus meshing.
 3. Tier 3 — thermoviscous, and the measurement correlation that Tier 3 is gated on.
 
@@ -53,6 +53,14 @@ input-deck writers — and is covered by tests. Never scatter `/1000` through ph
 Getting this wrong yields plausible-looking wrong answers, not crashes. The same trap
 applies to pressure: FreeCAD's internal pressure unit is **kilopascals**, so a property set
 to `101325 Pa` reads back as `101.325`.
+
+**In an Elmer deck this has a specific form.** A mesh exported from FreeCAD is in mm while
+the materials next to it are SI; FreeCAD's own writer bridges that with `Coordinate Scaling
+= Real 0.001` in the Simulation block rather than by rescaling the mesh. Our SIF writer
+must emit the same line or convert coordinates before export — and must assert whichever it
+chose, because a thermal benchmark is *provably* blind to the difference (deleting the line
+gives a bit-identical field). In acoustics the same omission moves every resonance by
+1000x. `STRUCTURE.md` §8 has the measurement; `scripts/check_elmer_toolchain.py` guards it.
 
 **Never write a solver.** If a numerical kernel seems needed, find the FOSS project that
 already has it (`STRUCTURE.md` §3 lists the portfolio). Native numerics are limited to
@@ -165,7 +173,13 @@ not (§6.5). A probe placed without it lands somewhere plausible and wrong.
 python3 -m pytest tests/ -q      # unit + integration; integration skips without FreeCAD
 python3 validation/run.py        # benchmarks against independent answers, with tolerances
 python3 scripts/check_env.py     # what is installed, and which tier first needs it
+python3 scripts/check_elmer_toolchain.py   # do Gmsh and Elmer actually work together
 ```
+
+`check_env.py` asks whether the binaries exist; `check_elmer_toolchain.py` asks whether
+they work — it drives a stock heat problem from FreeCAD through Gmsh, ElmerGrid and
+ElmerSolver and checks the result against its closed-form answer. Run it after installing
+or upgrading either. `--keep` retains the case directory for inspection.
 
 Tests and examples import `scripts.devpath`, which pins the `freecad` namespace package to
 this working tree. That matters because FreeCAD's bootstrap prepends every installed addon

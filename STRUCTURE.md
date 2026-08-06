@@ -1687,6 +1687,31 @@ Requirements on this layer:
   physics code and by input-deck writers — and is covered by tests. This is the single most
   likely source of silent, plausible-looking wrong answers. FreeCAD's internal *pressure*
   unit is kilopascals, which is the same trap wearing a different hat.
+
+  **How this lands in an Elmer deck, specifically.** A mesh exported from FreeCAD is in
+  **mm**, and Elmer will happily consume it while the material properties beside it are in
+  SI. FreeCAD's own writer reconciles the mismatch inside the SIF rather than by rescaling
+  the mesh, emitting into the Simulation block:
+
+  ```
+  Coordinate Scaling = Real 0.001
+  Coordinate Scaling Revert = Logical True
+  ```
+
+  Our SIF writer feeds Elmer the same mm mesh and therefore carries the same obligation:
+  emit the scaling, or convert coordinates through `physics/units.py` before export. Pick
+  one and assert it. Omitting both yields a model 1000x oversized.
+
+  **This error is invisible to the obvious benchmark.** Steady conduction between two
+  Dirichlet faces is scale-invariant — no source term, so stretching the geometry leaves
+  the field untouched. Deleting the scaling line from a working deck and re-solving gives a
+  *bit-identical* result (measured 2026-08-05, not assumed). A green thermal benchmark
+  therefore says nothing whatever about scale correctness.
+
+  Acoustics has no such mercy, which is the point: the Helmholtz equation weighs a
+  wavelength against the geometry, so a 1000x scale error relocates every resonance by
+  1000x without ever failing to converge. `scripts/check_elmer_toolchain.py` consequently
+  asserts the scaling against the **text of the SIF**, independently of any solved field.
 - **Graceful degradation.** If a solver binary is missing, the relevant commands are
   disabled with an explanatory message, not a traceback. Tier 1 must work with zero
   external binaries beyond what FreeCAD already ships.
