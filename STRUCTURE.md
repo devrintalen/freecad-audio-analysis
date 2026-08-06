@@ -1226,8 +1226,46 @@ AudioAnalysis
 ├── BehindMesh
 │   └── VentMesh   [BehindMesh -> exterior]
 ├── LowPass        [feeds Woofer]
+├── Cavities       (folder)
+│   └── EarCavity  the extracted air
+├── Caps           (folder)
+│   ├── Cap001
+│   └── ...
 └── LumpedSolver
 ```
+
+#### Geometry gets folders; the network does not
+
+Caps and cavities are not part of the graph above. A cap closes an opening and a cavity is
+air a boolean found — they are *geometry*, and they arrive in numbers that swamp the
+topology the tree exists to show. On the two-way cup there are nineteen caps against about
+ten network objects, so before this the analysis listed twenty-six things at its top level,
+twenty of which were caps, and the network was a minority of its own tree. Folding them
+away leaves eight.
+
+So each of those kinds gets an `App::DocumentObjectGroup` of its own, the way an Assembly
+files its joints (`objects/folders.py`). Three rules keep it from misbehaving:
+
+- **The folder is found by a marker, not by a label.** It carries a read-only `AudioFolder`
+  property naming what it collects. Matching on the label would fork a second folder the
+  moment anyone renamed "Caps", and a duplicate is a failure that survives much longer than
+  an error.
+- **A folder is never created empty.** An analysis with no caps does not grow a `Caps`.
+- **Creating one object tidies all of them.** `folders.organise` sweeps the whole analysis,
+  so a document written before the folders existed is brought into line by the next cap or
+  cavity rather than staying half-organised. Nothing moves on document *restore*:
+  rearranging someone's tree as a side effect of opening the file, and marking it modified
+  before they have touched it, is a worse surprise than a tidy-up they triggered.
+
+The folders are presentational, so nothing downstream may depend on them. `checks._members`
+descends one level through them, which is the single point every preflight check reaches
+its objects through, and `AudioAnalysis.members_of_type` does the same. That matters more
+than it sounds: a check that filtered `Group` directly would find whichever objects happened
+to predate the folders, silently skip the rest, and report a clean bill of health.
+
+An `AcousticVolume` still claims a plain solid it measures — that association is unchanged.
+It simply no longer applies to an `AcousticCavity`, which now lives in the folder instead;
+the tree cannot show both without drawing it twice.
 
 The far end of every element is written into its `Label2`, which FreeCAD's tree can show
 as a description column, so the choice of parent hides nothing. An `AcousticVolume` also

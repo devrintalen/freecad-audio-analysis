@@ -38,6 +38,7 @@ from freecad.audio_analysis.cavity import (
 from freecad.audio_analysis.checks import Severity
 from freecad.audio_analysis.seeding import SeedError
 from freecad.audio_analysis.objects.base import AudioObject, PropertySpec, attach_view_provider
+from freecad.audio_analysis.objects import folders
 from freecad.audio_analysis.objects.network_objects import quantity
 
 #: RegionIndex value meaning "every enclosed region".
@@ -361,4 +362,6 @@ def make_cavity(doc: Any, analysis: Any = None, name: str = "Cavity") -> Any:
     )
     if analysis is not None:
         analysis.addObject(obj)
+        # Sweeps the whole analysis, not just this cavity. See folders.organise.
+        folders.organise(analysis)
     return obj

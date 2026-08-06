@@ -156,7 +156,7 @@ between FreeCAD releases.
 | Path | Contents |
 |---|---|
 | `freecad/audio_analysis/physics/` | Solver-independent models: `air`, `network` (the nodal solver), `crossover`, `driver`, `validity`, `units` |
-| `freecad/audio_analysis/objects/` | `FeaturePython` proxies — the §6.2 document tree |
+| `freecad/audio_analysis/objects/` | `FeaturePython` proxies — the §6.2 document tree. `folders.py` files caps and cavities into groups of their own (§6.6); reach analysis members through `checks._members` or `members_of_type`, never by filtering `Group` directly, or foldered objects go silently unchecked |
 | `freecad/audio_analysis/viewproviders/` | ViewProviders, including the tree topology of §6.6 |
 | `freecad/audio_analysis/commands/` | Toolbar commands |
 | `freecad/audio_analysis/taskpanels/` | Task panels. Qt lives here and nowhere else outside `viewproviders/` |

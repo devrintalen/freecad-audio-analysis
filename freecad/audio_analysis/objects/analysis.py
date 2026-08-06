@@ -37,10 +37,26 @@ class AudioAnalysis(AudioObject):
         )
 
     def members_of_type(self, obj: Any, type_name: str) -> list[Any]:
-        """Return this analysis's children whose proxy Type matches ``type_name``."""
-        from freecad.audio_analysis.objects.base import is_audio_object
+        """Return this analysis's children whose proxy Type matches ``type_name``.
 
-        return [child for child in obj.Group if is_audio_object(child, type_name)]
+        Descends one level into the folders, because caps and cavities live in theirs
+        (STRUCTURE.md §6.6). Filtering ``Group`` alone would find whichever ones happen to
+        predate the folders and miss the rest -- a wrong answer rather than an empty one.
+        """
+        from freecad.audio_analysis.objects.base import is_audio_object
+        from freecad.audio_analysis.objects.folders import is_folder
+
+        found = []
+        for child in obj.Group:
+            if is_folder(child):
+                found.extend(
+                    member
+                    for member in getattr(child, "Group", ()) or ()
+                    if is_audio_object(member, type_name)
+                )
+            elif is_audio_object(child, type_name):
+                found.append(child)
+        return found
 
 
 def make_analysis(doc: Any, name: str = "AudioAnalysis") -> Any:
