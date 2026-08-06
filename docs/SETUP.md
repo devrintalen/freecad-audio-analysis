@@ -114,55 +114,73 @@ In the main tree at 4.14.1. Build it with the `python` USE flag so we get both t
 `acoupy_ears` needs):
 
 ```bash
-echo "sci-libs/gmsh python opencascade med" | sudo tee -a /etc/portage/package.use/gmsh
+echo "sci-libs/gmsh python opencascade" | sudo tee -a /etc/portage/package.use/gmsh
 sudo emerge --ask sci-libs/gmsh
 ```
 
 `opencascade` matters — it lets Gmsh read the STEP/BREP geometry FreeCAD exports.
+
+**Do not enable `med`.** It looks relevant and is not: FreeCAD's mesher writes `.unv`
+(`femmesh/gmshtools.py`, `temp_file_mesh`) and ElmerGrid converts from that, so nothing in
+our path ever reads a MED file. The flag only pulls in `sci-libs/med` and HDF5.
+
+*Installed 2026-08-05: gmsh 4.14.1-git, binary and Python module both present.*
 
 Alternative if the ebuild fights you: `pip install --user --break-system-packages gmsh`
 ships a prebuilt binary *and* the Python module, which is enough for both consumers.
 
 ### 2b. Elmer — the one real build
 
-Elmer is **not in the main portage tree**. Two options:
+Elmer is **not in the main portage tree**, and the only ebuild anywhere near it is stale.
 
-**Option A — science overlay.** Carries `sci-misc/elmer-fem-9.0-r2`.
+**Not the science overlay.** It carries `sci-misc/elmer-fem-9.0-r2` — release 9.0 is from
+December 2020, roughly six years behind. That alone rules it out; a separately reported
+history of link-time failures against UMFPACK is a secondary reason, unverified here
+because we never attempted it.
+
+**Build from source.** Upstream went quiet after 9.0 but resumed tagged releases in 2026
+on a CalVer scheme — `release-26.1` (January), `release-26.2` and `release-26.2.1` (April).
+Earlier revisions of this document said there had been no release since 9.0 and recommended
+tracking the `devel` branch; that is no longer true, and a tag is the better choice anyway.
+A benchmark suite needs a fixed, nameable solver version, and a moving `devel` HEAD gives
+validation numbers that drift between runs for reasons unrelated to our code.
+
+Tracking `devel` costs nothing in capability: at the time of writing, `release-26.2.1..devel`
+was 307 commits of which exactly one touched an acoustics solver, and that one only removed
+redundant `POINTER` qualifiers. Pin the tag.
 
 ```bash
-sudo emerge --ask app-eselect/eselect-repository
-sudo eselect repository enable science
-sudo emerge --sync science
-sudo emerge --ask sci-misc/elmer-fem
-```
-
-Caveat: 9.0 is the last tagged upstream release (2020) and the overlay is experimental;
-this ebuild has a history of link-time problems against UMFPACK. Try it first, but do not
-sink hours into it.
-
-**Option B — build from source (recommended).** Upstream development happens on the
-`devel` branch, and there has been no tagged release since 9.0, so most current users
-build from git. Elmer's acoustics solvers in particular benefit from post-9.0 fixes.
-
-```bash
-sudo emerge --ask sci-libs/mumps sci-libs/hypre dev-util/cmake   # optional but useful
-git clone --depth 1 https://github.com/ElmerCSC/elmerfem.git ~/src/elmerfem
-cmake -S ~/src/elmerfem -B ~/src/elmerfem/build \
+sudo emerge --ask dev-build/cmake          # plus gcc[fortran] and BLAS/LAPACK
+git clone --filter=blob:none https://github.com/ElmerCSC/elmerfem.git ~/repos/elmerfem
+git -C ~/repos/elmerfem checkout -b build-26.2.1 release-26.2.1
+cmake -S ~/repos/elmerfem -B ~/repos/elmerfem/build \
       -DCMAKE_INSTALL_PREFIX=$HOME/.local \
       -DWITH_OpenMP=TRUE \
       -DWITH_MPI=FALSE \
-      -DWITH_ELMERGUI=FALSE
-cmake --build ~/src/elmerfem/build -j"$(nproc)"
-cmake --install ~/src/elmerfem/build
+      -DWITH_ELMERGUI=FALSE \
+      -DCMAKE_BUILD_TYPE=Release
+cmake --build ~/repos/elmerfem/build -j6
+cmake --install ~/repos/elmerfem/build
 ```
 
 Notes:
-- Needs a Fortran compiler (`gcc` with `fortran` USE) plus BLAS/LAPACK.
+- `--filter=blob:none` rather than `--depth 1`: a shallow clone carries no tags, so you
+  cannot check out a release or see what upstream has published.
+- Needs a Fortran compiler (`gcc` with `fortran` USE) plus BLAS/LAPACK. Elmer picks up
+  FlexiBLAS automatically here and **vendors its own UMFPACK, ARPACK and PARPACK** rather
+  than linking system copies — which is structurally why the source build avoids the
+  UMFPACK linking trouble attributed to the ebuild.
+- `-j6`, not `-j"$(nproc)"`. This box has 16 cores but ~5 GB of RAM free in practice, and
+  Elmer's larger Fortran translation units are memory-hungry enough that a full-width build
+  invites the OOM killer. The build is RAM-bound, not core-bound.
 - `WITH_MPI=FALSE` keeps the build simple. Our frequency sweeps parallelise by running
   many independent single-threaded solves, which suits 16 cores better than MPI anyway.
 - Skipping ElmerGUI avoids a Qt dependency we do not need — we drive Elmer from FreeCAD.
 - Installing to `~/.local` keeps it out of portage's way; ensure `~/.local/bin` is on
   `PATH`.
+- MUMPS and Hypre are deliberately omitted. Tier 2's lossless Helmholtz equation does not
+  need a heavy direct solver; revisit at Tier 3, where thermoviscous losses make the
+  complex-valued system substantially stiffer.
 
 Verify with `ElmerSolver -v` and `ElmerGrid`, then re-run `scripts/check_env.py`.
 

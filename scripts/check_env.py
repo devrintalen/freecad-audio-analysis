@@ -132,12 +132,26 @@ def main() -> int:
         print(f"{tier:<5} {name:<{width}} {status:<3} {detail}")
 
     missing = [(t, n) for t, n, s, _ in rows if s == MISSING]
-    blocking = [n for t, n in missing if t in ("0", "1")]
     print()
-    if blocking:
-        print(f"Blocking Tier 0/1 work: {', '.join(blocking)}")
-    else:
-        print("Tier 0 and Tier 1 development is unblocked.")
+
+    # Report the highest tier whose components are all present. Tiers are cumulative:
+    # a satisfied Tier 3 is meaningless if Tier 2 is missing a solver, so scan upward
+    # and stop at the first gap rather than reporting each tier independently.
+    tiers = sorted({t for t, _, _, _ in rows})
+    missing_tiers = {t for t, _ in missing}
+    ready = []
+    for tier in tiers:
+        if tier in missing_tiers:
+            break
+        ready.append(tier)
+
+    if ready:
+        print(f"Tier {' and '.join(ready) if len(ready) < 3 else f'0-{ready[-1]}'} "
+              f"development is unblocked.")
+    if len(ready) < len(tiers):
+        first_gap = tiers[len(ready)]
+        blocking = [n for t, n in missing if t == first_gap]
+        print(f"Blocking Tier {first_gap}: {', '.join(blocking)}")
     if missing:
         print(f"{len(missing)} component(s) missing overall; see docs/SETUP.md.")
     return 0

@@ -31,8 +31,10 @@ are unvalidated — say so.
 
 **What is next**, in order (`STRUCTURE.md` §5 defines the tiers):
 
-1. Install Elmer and Gmsh; drive them end to end from FreeCAD's FEM workbench on a stock
-   example, proving the toolchain before depending on it.
+1. Elmer and Gmsh are installed (2026-08-05). **Still outstanding:** drive them end to end
+   from FreeCAD's FEM workbench on a stock example, proving the toolchain before depending
+   on it. Nothing in the SIF writer should be written until this passes — it is what
+   separates "our SIF generator is wrong" from "Elmer is misconfigured".
 2. Tier 2 — the Elmer SIF writer for the lossless Helmholtz equation, plus meshing.
 3. Tier 3 — thermoviscous, and the measurement correlation that Tier 3 is gated on.
 
@@ -191,7 +193,7 @@ package exists.
 
 ## Environment
 
-The development machine, surveyed 2026-08-02. **Run `python3 scripts/check_env.py` rather
+The development machine, surveyed 2026-08-05. **Run `python3 scripts/check_env.py` rather
 than trusting this table** — and note that a fresh CI or cloud container has none of it,
 which is expected: the pure-physics suite still runs, and the rest skips.
 
@@ -203,9 +205,10 @@ which is expected: the pure-physics suite still runs, and the rest skips.
 | matplotlib | 3.11.0 (available to FreeCAD's Python) |
 | NumPy / SciPy | 2.4.6 / 1.17.1 |
 | ngspice | `/usr/bin/ngspice` |
-| Gmsh | **not installed** — FreeCAD ships `femmesh/gmshtools.py`, the driver only; the binary is separate |
-| Elmer (`ElmerSolver`, `ElmerGrid`) | **not installed** — needed from Tier 2 |
+| Gmsh | 4.14.1, `/usr/bin/gmsh`, with the Python module (`USE=python opencascade`) |
+| Elmer (`ElmerSolver`, `ElmerGrid`) | 26.2, built from `release-26.2.1` into `~/.local`; sources in `~/repos/elmerfem` |
 | NumCalc | **not installed** — needed from Tier 4 |
+| `acoupy_ears` | **not installed** — needed from Tier 3 |
 
 `docs/SETUP.md` covers installing the missing pieces.
 
