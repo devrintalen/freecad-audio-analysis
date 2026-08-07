@@ -36,6 +36,7 @@ from PySide import QtCore, QtWidgets
 
 from freecad.audio_analysis import cavity as cavity_lib, leaks, seeding
 from freecad.audio_analysis.objects.network_objects import quantity
+from freecad.audio_analysis.viewproviders.leak_overlay import LeakOverlay
 
 #: How see-through the surrounding parts go while the panel is open, 0--100.
 #: High enough that a cavity buried inside a cup is visible through it, low enough that the
@@ -157,6 +158,7 @@ class CavityTaskPanel:
         self.obj = obj
         self.doc = obj.Document
         self.preview = ScenePreview()
+        self.overlay = LeakOverlay()
         self._cache_key: tuple | None = None
         self._sources: list[Any] = []
         self._regions: list[Any] = []
@@ -401,6 +403,9 @@ class CavityTaskPanel:
         # Qt keeps a stack of override cursors and only pops one per restore, so a wait
         # cursor left on the stack outlives the panel and follows the user around the
         # application.
+        # Any route drawn earlier belongs to the region that is about to be replaced.
+        self.overlay.clear()
+
         QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
         try:
             if rebuild or key != self._cache_key:
@@ -563,6 +568,9 @@ class CavityTaskPanel:
         self._show_findings(text)
 
     def _trace_leak(self) -> None:
+        # Cleared up front so it is only ever on screen when it matches what the findings
+        # box says. Every path out of this method either draws a fresh route or none.
+        self.overlay.clear()
         if self._region is None or self._probe is None:
             self._show_findings("Nothing to trace yet — the extraction has not run.")
             return
@@ -599,9 +607,17 @@ class CavityTaskPanel:
             FreeCAD.Console.PrintError(f"Audio Analysis: leak trace failed: {exc}\n")
             return
 
-        self._show_findings(
-            leaks.describe_escape_path(found, leaks.DEFAULT_RESOLUTION_MM)
-        )
+        text = leaks.describe_escape_path(found, leaks.DEFAULT_RESOLUTION_MM)
+        # Claimed only once the overlay is actually up: a report that says "drawn in the
+        # 3D view" when nothing was drawn sends the user hunting for it.
+        if self.overlay.show(found):
+            text += (
+                "\n\nThe route is drawn in the 3D view, running from the seed outward. "
+                "It is red where the void pinches down and pale blue where it is open, "
+                "and the sphere at the tightest point is drawn at the clearance actually "
+                "measured — so on a real leak it is deliberately small."
+            )
+        self._show_findings(text)
 
     # -- FreeCAD task-dialog protocol ------------------------------------------------
 
@@ -616,6 +632,7 @@ class CavityTaskPanel:
         Order matters on Cancel: the restore refers to the cavity's own view provider, and
         aborting the transaction deletes the cavity.
         """
+        self.overlay.clear()
         self.preview.restore()
 
     @staticmethod

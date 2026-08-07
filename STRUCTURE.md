@@ -896,6 +896,24 @@ nearest material, and finds the route to the outside whose *narrowest point is w
 That is a maximum-capacity path, solved exactly by one priority-queue sweep, with no
 threshold to pick. It reported the same defect as a 1.50 mm gap at radius 43.66 mm in 73 s.
 
+**The route is drawn, not just reported.** A coordinate inside a hundred-millimetre
+assembly is not somewhere anyone can look, and the shape of the route says more than the
+number does — seeing the line leave the back volume, run round an annulus and break through
+the wall identifies the feature, where "43.66 mm from the axis" only locates it. The line
+is coloured by clearance, red where the void pinches down and pale blue where it is open,
+which puts the answer to "where does it neck down" in the picture rather than in a table.
+The ramp rises in luminance from end to end (0.31, 0.69, 0.80), so it survives greyscale
+and red/green colour blindness; the obvious choice of a darker blue breaks that by putting
+the brightest point in the middle.
+
+It is a transient Coin3D overlay under `SoAnnotation`, not a document object. A
+`Part::Feature` polyline would be simpler and wrong in both directions: the panel builds
+its cavity inside a transaction, so Cancel would delete the path and OK would leave a
+diagnostic polyline in the saved model, where it is exactly the sort of thing later
+mistaken for geometry. `SoAnnotation` is also what makes it visible at all — the route is
+inside the parts by construction, so ordinary geometry would be hidden behind them even at
+the preview's translucency.
+
 Prefer the scan. It is roughly three times cheaper and names an object and a property,
 where the trace names a coordinate. The trace earns its place when the scan finds nothing,
 which is what an opening nobody ever tried to cap looks like: there is no second part
