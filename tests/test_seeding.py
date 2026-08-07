@@ -149,6 +149,43 @@ class TestProbeFromPick:
         point = seeding._point_on_face(face)
         assert face.distToShape(Part.Vertex(point))[0] == pytest.approx(0.0, abs=1e-6)
 
+    @pytest.mark.parametrize(
+        "solid",
+        [
+            pytest.param(sealed_box(), id="hollow-box"),
+            pytest.param(open_cup(), id="open-cup"),
+            pytest.param(
+                Part.makeCylinder(20.0, 40.0).cut(Part.makeCylinder(15.0, 40.0)),
+                id="tube",
+            ),
+            pytest.param(
+                Part.makeBox(20.0, 20.0, 20.0, FreeCAD.Vector(-10.0, -10.0, 0.0)).cut(
+                    Part.makeCylinder(3.0, 20.0)
+                ),
+                id="drilled-box",
+            ),
+        ],
+    )
+    def test_every_face_probe_lands_in_air_not_in_the_material(self, solid):
+        """The invariant the whole directed probe rests on, checked face by face.
+
+        ``Face.normalAt`` already applies the face's orientation, so flipping it again on
+        a ``Reversed`` face -- which reads plausibly -- aims the probe *into* the solid.
+        Roughly half the faces of any real part are reversed, and nothing complains: the
+        probe simply lands in the material, no region contains it, and
+        :func:`region_for_probe` quietly falls through to nearest-region matching, which
+        prefers the largest touching region. A pick beside a small cavity then returns the
+        exterior, and the panel reports a leak that does not exist.
+
+        Testing one face cannot catch this. The old code passed every single-face test in
+        this class because those faces happened to be ``Forward``.
+        """
+        for index, face in enumerate(solid.Faces):
+            probe = probe_from_subshape(face)
+            assert not solid.isInside(probe.point, 1e-7, False), (
+                f"face {index} ({face.Orientation}): the probe landed inside the material"
+            )
+
 
 class TestRegionMatching:
     def test_a_pick_inside_finds_the_enclosed_cavity(self):

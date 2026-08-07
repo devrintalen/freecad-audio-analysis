@@ -111,6 +111,21 @@ result still sits between the largest part and the sum, so a fuzzy boolean conve
 exact silent-corruption failure this workbench exists to detect into a routine one. Close
 openings with real cap geometry through `capping.py`, which is exact. `STRUCTURE.md` §6.5.
 
+**Never `cut` an extracted void region.** A region that came out of `envelope.cut(fused)`
+carries that boolean's widened tolerance, and subtracting from it again returns silent
+nonsense: on the two-way cup, `region.cut(box)` returned **−0.4018 cm³** and reported the
+result `isValid()`, where the answer was 772.65 cm³. A sphere-shell sweep of the same
+region reported 38.6 mm² of open area between neighbouring radii of 8909 and 12763 mm².
+Both were acted on as findings before the volume invariant caught them. `common`,
+`distToShape` and `slice` behaved on the same geometry — build diagnostics from those. To
+test whether plugging a region seals a cavity, add the plug to the *boundary solids*,
+re-fuse and subtract from the envelope again, so `fuse_diagnostic` guards the result: ~1.7 s
+per probe instead of 0.2 s, and the difference between an answer and a confident fiction.
+Related: the exterior test in `extract_regions_from_solids` compares a region's bounding box
+against the envelope's, which every plug that touches the envelope breaks — plugged tests
+must ask whether the region contains a point just inside an envelope corner instead.
+`STRUCTURE.md` §6.5.
+
 **A `Group` does not make an object a container.** An `App::Link` to a PartDesign body
 republishes that body's *feature tree* as its own `Group` — 34 entries of `Sketch`, `Pad`,
 `Pocket` for one cup. Recursing on "has children" walks into the construction history and
@@ -151,13 +166,14 @@ between FreeCAD releases.
 | Path | Contents |
 |---|---|
 | `freecad/audio_analysis/physics/` | Solver-independent models: `air`, `network` (the nodal solver), `crossover`, `driver`, `validity`, `units` |
-| `freecad/audio_analysis/objects/` | `FeaturePython` proxies — the §6.2 document tree |
+| `freecad/audio_analysis/objects/` | `FeaturePython` proxies — the §6.2 document tree. `folders.py` files caps and cavities into groups of their own (§6.6); reach analysis members through `checks._members` or `members_of_type`, never by filtering `Group` directly, or foldered objects go silently unchecked |
 | `freecad/audio_analysis/viewproviders/` | ViewProviders, including the tree topology of §6.6 |
 | `freecad/audio_analysis/commands/` | Toolbar commands |
 | `freecad/audio_analysis/taskpanels/` | Task panels. Qt lives here and nowhere else outside `viewproviders/` |
 | `freecad/audio_analysis/results/` | Curve container, target curves, summary card, plotting, export |
 | `freecad/audio_analysis/solvers/discovery.py` | Binary discovery and the graceful-degradation messages |
 | `builder.py`, `templates.py`, `checks.py`, `cavity.py`, `capping.py`, `seeding.py`, `geometry.py` | Network construction from templates, preflight checks (§6.8), cavity extraction, capping, seeded extraction and placement resolution (§6.5) |
+| `leaks.py` | Locating an opening once a cavity will not close: the near-miss scan over parts, and the voxel neck-finder over the air (§6.5) |
 | `tests/` | Pure-physics tests plus FreeCAD integration tests that skip without bindings |
 | `validation/` | Benchmarks against independent answers (§9) |
 | `examples/` | Runnable studies: `inspect_assembly.py`, `open_back_study.py`, `two_way_study.py` |

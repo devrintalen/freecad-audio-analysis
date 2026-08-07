@@ -23,3 +23,9 @@ cases/
 .idea/
 *.swp
 .DS_Store
+
+# Claude Code scratch. Only the worktrees, which are checkouts of this repository and
+# would otherwise be committed as embedded git repos -- `git add -A` picks one up as a
+# bare gitlink, which clones cannot resolve. Everything else under .claude/ (settings,
+# agents, skills, commands) is ordinary project config and stays trackable.
+.claude/worktrees/

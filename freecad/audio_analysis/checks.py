@@ -159,7 +159,24 @@ PLAUSIBLE_PRESSURE_PA = (30_000.0, 120_000.0)
 
 
 def _members(analysis: Any) -> list[Any]:
-    return list(getattr(analysis, "Group", []) or [])
+    """Everything in the analysis, looking through the folders rather than at them.
+
+    Caps and cavities live in folders of their own (STRUCTURE.md §6.6), which is a
+    presentational choice and must not change what the preflight pass can see. Every check
+    reaches its objects through here, so descending one level here is what keeps a
+    foldered cavity checked -- and the alternative failure is the bad kind: the checks
+    would find whichever objects happened to predate the folders, report nothing about the
+    rest, and look like a clean bill of health.
+    """
+    from freecad.audio_analysis.objects.folders import is_folder
+
+    found: list[Any] = []
+    for member in list(getattr(analysis, "Group", []) or []):
+        if is_folder(member):
+            found.extend(list(getattr(member, "Group", []) or []))
+        else:
+            found.append(member)
+    return found
 
 
 def _find(analysis: Any, type_name: str) -> list[Any]:

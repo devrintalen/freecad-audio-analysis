@@ -734,10 +734,16 @@ class TestCapObject:
         assert after == pytest.approx(math.pi * 12.0**2, rel=1e-3)
 
     def test_it_joins_the_analysis_when_there_is_one(self, doc):
+        """Inside the analysis, but in the Caps folder rather than loose beside the
+        network — see tests/test_folders.py."""
+        from freecad.audio_analysis.objects.folders import CAPS, find_folder
+
         analysis = make_analysis(doc)
         cap = make_cap(doc, analysis)
 
-        assert cap in analysis.Group
+        folder = find_folder(analysis, CAPS)
+        assert folder is not None and folder in analysis.Group
+        assert cap in folder.Group
 
     def test_it_drives_a_cavity_end_to_end(self, doc):
         """Cap, then extract, then read the volume -- the whole point of the command."""

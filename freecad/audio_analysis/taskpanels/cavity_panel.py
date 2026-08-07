@@ -34,7 +34,7 @@ import FreeCAD
 import FreeCADGui
 from PySide import QtCore, QtWidgets
 
-from freecad.audio_analysis import cavity as cavity_lib, seeding
+from freecad.audio_analysis import cavity as cavity_lib, leaks, seeding
 from freecad.audio_analysis.objects.network_objects import quantity
 
 #: How see-through the surrounding parts go while the panel is open, 0--100.
@@ -161,9 +161,17 @@ class CavityTaskPanel:
         self._sources: list[Any] = []
         self._regions: list[Any] = []
         self._hidden: list[str] = []
+        # The kept region and the probe that chose it, held so the leak searches can run
+        # on demand without repeating the extraction.
+        self._region: Any = None
+        self._probe: Any = None
+        self._verdict_html = "—"
 
         self.form = self._build()
         self.form.setWindowTitle("Extract cavity")
+        # Both searches need solids to work on, and there are none until the first
+        # extraction returns. Enabling them before that offers a button that can only fail.
+        self._sync_leak_buttons()
 
         if seed is not None:
             self._set_seed(*seed)
@@ -222,10 +230,65 @@ class CavityTaskPanel:
         self.walls.setReadOnly(True)
         self.walls.setMinimumHeight(120)
         result_layout.addWidget(self.walls)
+        result_layout.addWidget(self._leak_tools())
         layout.addWidget(result_box)
 
         layout.addStretch(1)
         return form
+
+    def _leak_tools(self) -> Any:
+        """The two leak searches, offered rather than run.
+
+        Both are far too slow to sit in the refresh path -- roughly half a minute and a
+        minute on a full assembly -- and neither is wanted at all unless the cavity failed
+        to close. So they are buttons, and the panel says plainly which to reach for
+        first, because the cheap one answers the common case and the expensive one does
+        not answer it any better.
+        """
+        widget = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(widget)
+        layout.setContentsMargins(0, 8, 0, 0)
+
+        blurb = QtWidgets.QLabel(
+            "<b>If it leaks, find out where.</b><br>"
+            "<b>Scan near misses</b> compares the parts against each other and usually "
+            "names the object to fix — typically a cap that stops short of its opening. "
+            "It never touches the air, so it is the cheaper search and the one to try "
+            "first.<br>"
+            "<b>Trace leak path</b> works on the air instead, finding the widest way out "
+            "and how narrow that way gets. Several times slower, and it points at a "
+            "<i>place</i> rather than a part — worth it when the scan comes up empty, "
+            "which is what an opening nobody ever tried to cap looks like."
+        )
+        blurb.setWordWrap(True)
+        layout.addWidget(blurb)
+
+        row = QtWidgets.QHBoxLayout()
+        self.scan_button = QtWidgets.QPushButton("Scan near misses   (~30 s)")
+        self.scan_button.setToolTip(
+            "Find every pair of parts that comes within half a millimetre without "
+            "meeting, and every cap that overlaps nothing at all. Cost grows with the "
+            "number of parts, not with the size of the cavity."
+        )
+        self.scan_button.clicked.connect(self._scan_near_misses)
+        row.addWidget(self.scan_button)
+
+        self.trace_button = QtWidgets.QPushButton("Trace leak path   (~1 min)")
+        self.trace_button.setToolTip(
+            f"Voxelise the cavity at {leaks.DEFAULT_RESOLUTION_MM} mm and find the route "
+            f"to the outside whose narrowest point is widest. Cannot see a gap finer than "
+            f"the voxel size, so 'no route' is not proof of a seal."
+        )
+        self.trace_button.clicked.connect(self._trace_leak)
+        row.addWidget(self.trace_button)
+        layout.addLayout(row)
+
+        self.findings = QtWidgets.QTextEdit()
+        self.findings.setReadOnly(True)
+        self.findings.setMinimumHeight(160)
+        self.findings.setVisible(False)
+        layout.addWidget(self.findings)
+        return widget
 
     # -- preview -------------------------------------------------------------------
 
@@ -296,10 +359,19 @@ class CavityTaskPanel:
         """Say what is happening, and let Qt actually paint it.
 
         The extraction blocks the event loop for several seconds, so without the explicit
-        repaint the message never appears and the panel simply freezes.
+        repaint the message never appears and the panel simply freezes. Deliberately does
+        *not* record the text as the verdict: a progress line is not a result, and
+        :meth:`_restore_verdict` has to be able to put the real one back.
         """
         self.verdict.setText(f"<i>{message}</i>")
         QtWidgets.QApplication.processEvents()
+
+    def _set_verdict(self, html: str) -> None:
+        self._verdict_html = html
+        self.verdict.setText(html)
+
+    def _restore_verdict(self) -> None:
+        self.verdict.setText(self._verdict_html)
 
     def _refresh(self, rebuild: bool = False) -> None:
         """Re-extract if the inputs changed, then re-match the seed and redraw."""
@@ -308,7 +380,7 @@ class CavityTaskPanel:
             # Only reachable by editing a cavity made before seeding existed, which still
             # selects its region by RegionIndex. There is nothing to pick with here, so
             # say what to do rather than offering a control that is not present.
-            self.verdict.setText(
+            self._set_verdict(
                 "This cavity has no seed — it keeps region "
                 f"{getattr(self.obj, 'RegionIndex', 0)} by number. Cancel and run "
                 "<b>Extract cavity</b> with a face selected to seed it by position, "
@@ -336,21 +408,25 @@ class CavityTaskPanel:
                 self._cache_key = key
             self._apply_seed()
         except cavity_lib.BooleanFailure as exc:
-            self.verdict.setText(
+            self._region = self._probe = None
+            self._set_verdict(
                 "<b style='color:#b00'>Extraction failed.</b> The boundary parts could "
                 "not be combined, so nothing can be concluded about whether the cavity "
                 "is closed."
             )
             self.walls.setPlainText(cavity_lib.format_diagnostics(exc.diagnostics))
         except cavity_lib.CavityError as exc:
-            self.verdict.setText(f"<b style='color:#b00'>{exc}</b>")
+            self._region = self._probe = None
+            self._set_verdict(f"<b style='color:#b00'>{exc}</b>")
             self.walls.setPlainText("")
         except Exception as exc:  # noqa: BLE001 -- boundary with Qt's event loop
-            self.verdict.setText(f"<b style='color:#b00'>Unexpected failure: {exc}</b>")
+            self._region = self._probe = None
+            self._set_verdict(f"<b style='color:#b00'>Unexpected failure: {exc}</b>")
             self.walls.setPlainText("")
             FreeCAD.Console.PrintError(f"Audio Analysis: cavity preview failed: {exc}\n")
         finally:
             QtWidgets.QApplication.restoreOverrideCursor()
+            self._sync_leak_buttons()
 
     def _extract(self, boundary: list[Any], caps: list[Any], include_hidden: bool) -> None:
         self._status("Collecting parts…")
@@ -368,10 +444,11 @@ class CavityTaskPanel:
         source, subnames = self.obj.Seed
         probe = seeding.probe_from_reference(source, subnames[0])
         region = seeding.region_for_probe(self._regions, probe)
+        self._region, self._probe = region, probe
 
         if region is None:
             self.obj.Shape = self._empty_shape()
-            self.verdict.setText(
+            self._set_verdict(
                 "<b style='color:#b00'>That face touches no air.</b> It is probably "
                 "buried against another part — pick a face on the side the cavity "
                 "is on."
@@ -396,17 +473,18 @@ class CavityTaskPanel:
 
     def _show_verdict(self, region: Any, parts: Sequence[Any]) -> None:
         if region.is_exterior:
-            self.verdict.setText(
+            self._set_verdict(
                 f"<b style='color:#b00'>Leaks to the outside — "
                 f"{region.volume_cm3:.3f} cm³.</b><br>"
                 f"This air reaches the edge of the model, so it is continuous with the "
                 f"outside and is not a cavity. A cap is missing, or there is a leak path. "
-                f"The parts below are everything it touches."
+                f"The parts below are everything it touches — the two searches at the "
+                f"bottom will find <i>where</i>."
             )
             return
 
         box = region.shape.BoundBox
-        self.verdict.setText(
+        self._set_verdict(
             f"<b style='color:#060'>Enclosed — {region.volume_cm3:.3f} cm³.</b>"
             f"<br>{box.XLength:.1f} × {box.YLength:.1f} × {box.ZLength:.1f} mm, "
             f"bounded by {len(parts)} part(s)."
@@ -435,6 +513,95 @@ class CavityTaskPanel:
                 f"— wall belonging to no part"
             )
         return "\n".join(lines)
+
+    # -- the leak searches -------------------------------------------------------------
+
+    def _sync_leak_buttons(self) -> None:
+        """Neither search means anything before an extraction has produced solids."""
+        ready = bool(self._sources)
+        for button in (self.scan_button, self.trace_button):
+            button.setEnabled(ready)
+
+    def _show_findings(self, text: str) -> None:
+        self.findings.setPlainText(text)
+        self.findings.setVisible(True)
+
+    def _run(self, message: str, work: Any) -> Any:
+        """Run a slow search with the cursor and the status line saying so.
+
+        One override cursor, popped in ``finally``: Qt stacks them and only pops one per
+        restore, so a leaked wait cursor outlives the panel and follows the user around
+        the whole application.
+        """
+        QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
+        try:
+            self._status(message)
+            return work()
+        finally:
+            QtWidgets.QApplication.restoreOverrideCursor()
+            self._restore_verdict()
+
+    def _scan_near_misses(self) -> None:
+        if not self._sources:
+            self._show_findings("Nothing to scan yet — the extraction has not run.")
+            return
+
+        caps = [_label(o) for o in self.doc.Objects if seeding.is_cap_object(o)]
+        try:
+            found = self._run(
+                f"Comparing {len(self._sources)} solids against each other…",
+                lambda: leaks.near_miss_diagnostics(self._sources, caps=caps),
+            )
+        except Exception as exc:  # noqa: BLE001 -- boundary with Qt's event loop
+            self._show_findings(f"The scan failed: {exc}")
+            FreeCAD.Console.PrintError(f"Audio Analysis: near-miss scan failed: {exc}\n")
+            return
+
+        text = leaks.describe_near_misses(found)
+        if found:
+            text += "\n\n" + cavity_lib.format_diagnostics(found)
+        self._show_findings(text)
+
+    def _trace_leak(self) -> None:
+        if self._region is None or self._probe is None:
+            self._show_findings("Nothing to trace yet — the extraction has not run.")
+            return
+        if not self._region.is_exterior:
+            # Tracing an enclosed cavity can only report "no way out", which the verdict
+            # already says. Spending a minute to repeat it would be a poor trade.
+            self._show_findings(
+                "This cavity is already enclosed, so there is no leak to trace.\n\n"
+                "The trace looks for a route from the cavity to the edge of the model, "
+                "and there is none — which is what the verdict above says. Run it on a "
+                "cavity that reports leaking."
+            )
+            return
+
+        try:
+            envelope = cavity_lib.make_envelope(
+                [s.solid for s in self._sources],
+                self.obj.Padding.getValueAs("mm").Value,
+            )
+            found = self._run(
+                f"Voxelising {self._region.volume_cm3:.0f} cm³ at "
+                f"{leaks.DEFAULT_RESOLUTION_MM} mm… this takes about a minute.",
+                lambda: leaks.find_escape_path(
+                    self._region.shape,
+                    self._probe.point,
+                    envelope_box=envelope.BoundBox,
+                ),
+            )
+        except leaks.LeakSearchError as exc:
+            self._show_findings(f"The trace could not run: {exc}")
+            return
+        except Exception as exc:  # noqa: BLE001 -- boundary with Qt's event loop
+            self._show_findings(f"The trace failed: {exc}")
+            FreeCAD.Console.PrintError(f"Audio Analysis: leak trace failed: {exc}\n")
+            return
+
+        self._show_findings(
+            leaks.describe_escape_path(found, leaks.DEFAULT_RESOLUTION_MM)
+        )
 
     # -- FreeCAD task-dialog protocol ------------------------------------------------
 

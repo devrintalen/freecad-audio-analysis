@@ -30,6 +30,7 @@ from freecad.audio_analysis.capping import (
     describe_openings,
 )
 from freecad.audio_analysis.objects.base import AudioObject, PropertySpec, attach_view_provider
+from freecad.audio_analysis.objects import folders
 from freecad.audio_analysis.objects.network_objects import quantity
 
 
@@ -134,4 +135,7 @@ def make_cap(doc: Any, analysis: Any = None, name: str = "Cap") -> Any:
     )
     if analysis is not None:
         analysis.addObject(obj)
+        # Sweeps the whole analysis, not just this cap: an assembly that predates the
+        # folders would otherwise stay half-organised. See folders.organise.
+        folders.organise(analysis)
     return obj

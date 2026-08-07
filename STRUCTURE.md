@@ -820,9 +820,20 @@ Four details are load-bearing, each of which failed first:
 
 - **The probe must sit off the surface.** A picked face lies exactly on the boundary
   between solid and void, so a point on it is in neither region and the match is a coin
-  toss. Offsetting 0.01 mm along the *oriented* face normal lands it unambiguously in the
+  toss. Offsetting 0.01 mm along the face normal lands it unambiguously in the
   air. Edges and vertices have no single normal, so they fall back to nearest-region
   matching — which is why the panel recommends picking a face.
+- **`Face.normalAt` is already outward; do not flip it.** It applies the face's
+  orientation itself, verified on boxes, cylinders and boolean results in FreeCAD 1.1.1.
+  Flipping it again on a `Reversed` face reads plausibly and is what the first version
+  did, and it aims the probe *into the material* on roughly half of all faces — six of a
+  hollow box's twelve. Nothing raises: the probe lands in a solid, no region contains it,
+  the directed containment test finds nothing, and the match falls through to the
+  nearest-region path meant for edges and vertices. That path prefers the *largest*
+  touching region, which beside a cavity wall is the exterior — so a face pick reported a
+  leak that was not there, having quietly discarded the one thing a face pick is for.
+  The regression test walks *every* face of four hollow solids, because the bug is
+  invisible to any test that picks one face: the obvious ones to pick are `Forward`.
 - **A container's `Shape` cannot be used.** It is one flat compound in which the parts are
   anonymous, so "solid 7 bounds your cavity" is unactionable, and it silently drops hidden
   children. Walking the container with `getSubObject` keeps both identity and placement.
@@ -855,6 +866,59 @@ swollen to fill the bounding box is unmistakable in the 3D view and invisible in
 readout, and it means exactly one of two things: a cap is missing, or there is a leak path
 nobody knew about. The model is drawn translucent and the cavity solid so that this is the
 first thing the user sees.
+
+#### Locating the leak: two searches, offered rather than run
+
+Showing *that* a cavity leaks turned out to be much easier than showing *where*. On the
+two-way cup the opening is one feature among several hundred, and a translucent solid
+filling the bounding box looks identical whatever the cause. `leaks.py` provides two
+searches, both reached from buttons at the foot of the extraction panel. Neither runs
+automatically: they cost tens of seconds, and they are pointless unless the cavity failed
+to close.
+
+**The near-miss scan** never looks at the air. It reports every pair of parts that comes
+within half a millimetre without overlapping, and — the sharper signal — every cap that
+overlaps *nothing at all*. On the real assembly it ran in 27 s and led with `Cap004
+overlaps nothing and so seals nothing`, which was the whole answer: that cap was missing
+the 1.000 mm `Placement` its seven siblings carry, so it sat 0.019 mm clear of the cup
+while they overlapped it by 24.89 mm³ each. Restoring the placement closed the back volume
+at 182.02 cm³.
+
+The failure it is built around is worth stating, because it defeated everything else
+tried: **a displaced cap is not an undersized one.** Growing that cap did nothing, and
+growing *every* cap by 15 % still left the model open, which looked like proof that no cap
+was responsible. Scaling a cap about its own centroid preserves the displacement.
+
+**The neck-finder** works on the air. It voxelises the leaking region — sectioning it plane
+by plane and filling each section by the even-odd rule, which is roughly a hundred times
+faster than classifying points with `isInside` — computes each air voxel's distance to the
+nearest material, and finds the route to the outside whose *narrowest point is widest*.
+That is a maximum-capacity path, solved exactly by one priority-queue sweep, with no
+threshold to pick. It reported the same defect as a 1.50 mm gap at radius 43.66 mm in 73 s.
+
+Prefer the scan. It is roughly three times cheaper and names an object and a property,
+where the trace names a coordinate. The trace earns its place when the scan finds nothing,
+which is what an opening nobody ever tried to cap looks like: there is no second part
+beside it to come close to.
+
+**Neither search subtracts from the void, and that is not a stylistic choice.** OpenCascade
+cannot be trusted to cut a region that itself came out of a boolean. On this assembly
+`region.cut(box)` returned **−0.4018 cm³** and reported the result valid, where the answer
+was 772.65 cm³; a sphere-shell sweep of the same region reported 38.6 mm² of open area
+between neighbouring radii of 8909 and 12763 mm². Both were read as findings before the
+volume invariant caught them, and both sent the search to the wrong place. The scan
+therefore uses only `common` and `distToShape`, and the neck-finder only `slice` — all of
+which behaved on the same geometry. Any leak test that must subtract has to do it the long
+way round: add the plug to the *boundary solids*, re-fuse, and subtract from the envelope
+again, so `fuse_diagnostic`'s bounds check guards the result.
+
+One further trap, recorded because it produced confident nonsense for an hour: **the
+bounding-box test for "is this region the exterior" breaks under plugging.**
+`extract_regions_from_solids` identifies the exterior by comparing a region's bounding box
+against the envelope's, which is correct for an ordinary extraction and wrong the moment a
+test plug touches or spans the envelope — every region's box then shrinks and *everything*
+reads as enclosed. Leak tests must instead ask whether the region contains a point just
+inside an envelope corner.
 
 #### Openings are closed by capping them, not by a tolerance
 
@@ -1162,8 +1226,65 @@ AudioAnalysis
 ├── BehindMesh
 │   └── VentMesh   [BehindMesh -> exterior]
 ├── LowPass        [feeds Woofer]
+├── Cavities       (folder)
+│   └── EarCavity  the extracted air
+├── Caps           (folder)
+│   ├── Cap001
+│   └── ...
 └── LumpedSolver
 ```
+
+#### Geometry gets folders; the network does not
+
+Caps and cavities are not part of the graph above. A cap closes an opening and a cavity is
+air a boolean found — they are *geometry*, and they arrive in numbers that swamp the
+topology the tree exists to show. On the two-way cup there are nineteen caps against about
+ten network objects, so before this the analysis listed twenty-six things at its top level,
+twenty of which were caps, and the network was a minority of its own tree. Folding them
+away leaves eight.
+
+So each of those kinds gets a group of its own (`objects/folders.py`), following the
+Assembly workbench — which files joints, bills of materials, exploded views and simulations
+this way, one group apiece, each **found by a stable type tag rather than by its label**:
+
+```python
+def getJointGroup(assembly):                        # Mod/Assembly/UtilsAssembly.py
+    for obj in assembly.OutList:
+        if obj.TypeId == "Assembly::JointGroup":
+            return obj
+    return assembly.newObject("Assembly::JointGroup", "Joints")
+```
+
+The one thing that cannot be copied is the *kind* of tag. `Assembly::JointGroup` is a
+registered C++ type, and this workbench must contain no compiled extensions. The Python
+equivalent is the tag everything else here already uses: an
+`App::DocumentObjectGroupPython` whose proxy carries a persisted `Type` —
+`Audio::CapFolder`, `Audio::CavityFolder` — found with `is_audio_object`. Matching on the
+label instead would fork a second folder the moment anyone renamed "Caps", and a duplicate
+is a fault that survives far longer than an error.
+
+Two places this departs from Assembly, on the merits rather than by necessity:
+
+- **A folder is never created empty.** Assembly creates `Joints` when the assembly is made,
+  which is right when joints are the whole point of the container. Caps are optional here —
+  air modelled directly as a solid needs none — so an empty `Caps` on every analysis would
+  be noise.
+- **Creating one object tidies all of them.** Assembly needs no sweep, because joints have
+  only ever been created into the group. These folders arrived after documents already had
+  caps loose in the analysis, so `folders.organise` sweeps the whole analysis and a
+  half-organised tree never appears. Nothing moves on document *restore*: rearranging
+  someone's tree as a side effect of opening the file, and marking it modified before they
+  have touched it, is the worse surprise.
+
+The folders are presentational, so nothing downstream may depend on them. `checks._members`
+descends one level through them, which is the single point every preflight check reaches
+its objects through, and `AudioAnalysis.members_of_type` does the same. That matters more
+than it sounds: a check that filtered `Group` directly would find whichever objects happened
+to predate the folders, silently skip the rest, and report a clean bill of health.
+
+An `AcousticVolume` still claims a plain solid it measures — that association is unchanged.
+It simply no longer applies to an `AcousticCavity`, which now lives in the folder instead;
+the tree cannot show both without drawing it twice.
 
 The far end of every element is written into its `Label2`, which FreeCAD's tree can show
 as a description column, so the choice of parent hides nothing. An `AcousticVolume` also
@@ -1610,6 +1731,7 @@ freecad-audio-analysis/
 │       ├── templates.py        # the §6.8 starting topologies
 │       ├── checks.py           # preflight diagnostics (§6.8)
 │       ├── cavity.py           # fluid-domain extraction (§6.5)
+│       ├── leaks.py            # locating an opening once a cavity will not close (§6.5)
 │       ├── geometry.py         # shape access, global placement resolution
 │       ├── commands/           # one module per toolbar command
 │       ├── objects/            # FeaturePython proxies (the §6.2 tree)

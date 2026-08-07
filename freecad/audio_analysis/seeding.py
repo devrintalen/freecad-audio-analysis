@@ -153,19 +153,24 @@ def _point_on_face(face: Any) -> Any:
 def _outward_normal(face: Any, point: Any) -> Any:
     """The face normal at ``point``, pointing out of the solid the face belongs to.
 
-    ``normalAt`` returns the *surface* normal, which ignores whether the face is used in
-    its natural orientation or reversed. A face on a solid is reversed exactly when the
-    solid is on the side the surface normal points to, so the flip is what makes this
-    "outward" rather than "whichever way the underlying surface happens to run".
+    ``Face.normalAt`` already applies the face's orientation, so it *is* the outward
+    normal and nothing further is needed. Flipping it again on a ``Reversed`` face --
+    which reads plausibly, and which this function did -- points the probe straight into
+    the material instead, on roughly half of all faces. The failure is quiet: the probe
+    then sits inside a solid, no region contains it, and
+    :func:`region_for_probe`'s containment test finds nothing and falls through to
+    nearest-region matching, which prefers the *largest* touching region. So a face pick
+    beside a small cavity silently returned the exterior and the panel reported a leak
+    that was not there -- the exact ambiguity the directed probe exists to remove.
+
+    Verified against FreeCAD 1.1.1 on boxes, cylinders and boolean results: ``normalAt``
+    points out of the solid for every face, ``Forward`` and ``Reversed`` alike.
     """
     try:
         u, v = face.Surface.parameter(point)
-        normal = face.normalAt(u, v)
+        return face.normalAt(u, v)
     except Exception as exc:  # noqa: BLE001 -- parameterisation fails on odd surfaces
         raise SeedError(f"could not take a normal on the picked face: {exc}") from exc
-    if face.Orientation == "Reversed":
-        normal = FreeCAD.Vector(-normal.x, -normal.y, -normal.z)
-    return normal
 
 
 def probe_from_subshape(sub: Any, offset: float = PROBE_OFFSET_MM) -> SeedProbe:
