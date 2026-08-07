@@ -177,7 +177,7 @@ between FreeCAD releases.
 | `tests/` | Pure-physics tests plus FreeCAD integration tests that skip without bindings |
 | `validation/` | Benchmarks against independent answers (§9) |
 | `examples/` | Runnable studies: `inspect_assembly.py`, `open_back_study.py`, `two_way_study.py` |
-| `scripts/` | `check_env.py`, `devpath.py` |
+| `scripts/` | `check_env.py`, `check_elmer_toolchain.py`, `devpath.py` |
 
 **Positions from nested parts must go through `geometry.global_placement_of()`.** A child
 of an assembly reports its `Shape` in local coordinates; volume survives that, positions do
